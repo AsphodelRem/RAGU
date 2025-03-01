@@ -1,5 +1,5 @@
 from pyexpat.errors import messages
-
+from vllm import LLM, SamplingParams
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 from openai import OpenAI
 import torch
@@ -56,3 +56,18 @@ class RemoteLLM(BaseLLM):
         )
         return response.choices[0].message.content if response.choices else ""
 
+class VLLMClient(BaseLLM):
+    def __init__(self, model_name: str, sampling_params: dict = None, tensor_parallel_size: int = 4, torch_dtype=torch.float16):
+        self.engine = LLM(model=model_name, 
+                          tensor_parallel_size=tensor_parallel_size, 
+                          torch_dtype=torch_dtype)
+        self.sampling_params = SamplingParams(**(sampling_params or {"max_tokens": 100}))
+        super().__init__()
+
+    def generate(self, query: str, system_prompt: str, *args, **kwargs):
+        full_prompt = f"{system_prompt}\n{query}"
+        result = self.engine.generate(full_prompt, sampling_params=self.sampling_params, **kwargs)
+        if isinstance(result, list) and result and result[0].outputs:
+            return result[0].outputs[0].text
+        else:
+            return result
