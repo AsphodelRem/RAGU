@@ -13,11 +13,11 @@ Partially based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag/tr
 
 ---
 
-## 🛠 Installation
+## 🛠 Installation using [Poetry](https://python-poetry.org/)
 Ensure you have all dependencies installed before running the script.
 
 ```bash
-pip install -r requirements.txt
+poetry install
 ```
 
 ---
