@@ -1,5 +1,4 @@
-from abc import abstractmethod, ABC
-from typing import List, Union
+from abc import ABC, abstractmethod
 
 from sentence_transformers import SentenceTransformer
 
@@ -16,7 +15,7 @@ class BaseEmbedder(ABC):
         self.dim = None
 
     @abstractmethod
-    def embed(self, texts: List[str]):
+    def embed(self, texts: str | list[str]):
         """
         Computes embeddings for a list of text inputs.
         """
@@ -44,7 +43,7 @@ class STEmbedder(BaseEmbedder):
         if self.dim is None:
             self.dim = len(self.model.encode(["asphodel"]))
 
-    def embed(self, texts: Union[str, List[str]]):
+    def embed(self, texts: str | list[str]):
         """
         Computes embeddings for a string or a list of strings.
 
@@ -53,4 +52,4 @@ class STEmbedder(BaseEmbedder):
         """
         if isinstance(texts, str):
             texts = [texts]
-        return self.model.encode(texts)
+        return self.model.encode(texts, show_progress_bar=False)
