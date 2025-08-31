@@ -1,16 +1,16 @@
 # Based on https://github.com/gusye1234/nano-graphrag/blob/main/nano_graphrag/_storage/vdb_nanovectordb.py
 
-import os
 import logging
-from typing import Dict, Any, List
+import os
+from typing import Any, Dict, List
 
 import numpy as np
 from nano_vectordb import NanoVectorDB
 
-from ragu.common import BatchGenerator
+from ragu.common.batch_generator import BatchGenerator
 from ragu.common.embedder import BaseEmbedder
-from ragu.storage.base_storage import BaseVectorStorage
 from ragu.common.global_parameters import storage_run_dir
+from ragu.storage.base_storage import BaseVectorStorage
 
 
 class NanoVectorDBStorage(BaseVectorStorage):
@@ -58,7 +58,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def query(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         embedding = self.embedder(query)[0]
         results = self._client.query(
-            query=embedding, top_k=top_k, better_than_threshold=self.cosine_threshold
+            query=embedding,
+            top_k=top_k,
+            better_than_threshold=self.cosine_threshold
         )
         return [{**res, "id": res["__id__"], "distance": res["__metrics__"]} for res in results]
 
