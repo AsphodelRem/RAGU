@@ -1,20 +1,13 @@
+import asyncio
 import logging
 
 from ragu.common.index import Index
 from ragu.common.llm import BaseLLM
 from ragu.search_engine.base_engine import BaseEngine
+from ragu.utils.parse_json_output import create_text_from_community
 from ragu.utils.ragu_utils import TokenTruncation
-from ragu.utils.default_prompts.search_engine_query_prompts import (
-    global_search_engine_prompt,
-    global_search_meta_prompt,
-    system_prompt
-)
 
-from ragu.search_engine.search_functional import global_search_default_extractor
-from ragu.utils.parse_json_output import (
-    extract_json,
-    create_text_from_community
-)
+from ragu.common import GlobalPromptStorage
 
 
 class GlobalSearchEngine(BaseEngine):
@@ -25,7 +18,6 @@ class GlobalSearchEngine(BaseEngine):
             max_context_length: int = 30_000,
             tokenizer_backend: str = "tiktoken",
             tokenizer_model: str = "gpt-4",
-            extractor=global_search_default_extractor,
             *args,
             **kwargs
     ):
@@ -39,9 +31,10 @@ class GlobalSearchEngine(BaseEngine):
             max_context_length
         )
 
-        self.extractor = extractor
+        self.prompt_tool = GlobalPromptStorage.global_search_engine_prompt
+        self.prompt_tool_for_context = GlobalPromptStorage.global_search_context_engine_prompt
 
-    async def search(self, query, *args, **kwargs):
+    async def a_search(self, query, *args, **kwargs):
         responses: list[str] = []
         for community_cluster_id in await self.index.communities_kv_storage.all_keys():
             try:
@@ -50,30 +43,30 @@ class GlobalSearchEngine(BaseEngine):
             except ValueError as e:
                 logging.warning(e)
 
-        responses = list(filter(lambda x: x.get("rating", 0) > 0, responses))
-        responses: list[dict] = sorted(responses, key=lambda x: x.get("rating", 0), reverse=True)
+        responses = list(filter(lambda x: int(x.get("rating", 0)) > 0, responses))
+        responses: list[dict] = sorted(responses, key=lambda x: int(x.get("rating", 0)), reverse=True)
 
         return "\n".join([r.get("response", "") for r in responses])
 
-    def build_index(self):
-        pass
-
     async def get_meta_responses(self, query: str, context: str) -> str:
-        output = self.client.generate(
-            global_search_meta_prompt.format(query=query, context=context),
-            system_prompt
-        )[0]
+        return self.prompt_tool_for_context.forward(
+            self.client,
+            query=query,
+            context=context
+        )
 
-        output_dict = extract_json(output)
-        return output_dict
-
-    async def query(self, query: str):
-        context = await self.search(query)
+    async def a_query(self, query: str):
+        context = await self.a_search(query)
         truncated_context: str = self.truncation(str(context))
 
-        output = self.client.generate(
-            global_search_engine_prompt.format(query=query, context=truncated_context),
-            system_prompt
-        )[0]
+        return self.prompt_tool.forward(
+            self.client,
+            query=query,
+            context=truncated_context
+        )
 
-        return self.extractor(output)
+    def search(self, query, *args, **kwargs):
+        return asyncio.run(self.a_search(query))
+
+    def query(self, query: str):
+        return asyncio.run(self.a_query(query))

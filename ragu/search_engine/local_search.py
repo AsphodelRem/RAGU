@@ -15,6 +15,8 @@ from ragu.search_engine.search_functional import (
 from ragu.search_engine.types import SearchResult
 from ragu.utils.ragu_utils import TokenTruncation
 
+from ragu.common import GlobalPromptStorage
+
 
 class LocalSearchEngine(BaseEngine):
     """
@@ -48,10 +50,12 @@ class LocalSearchEngine(BaseEngine):
         self.index = index
         self.client = client
 
+        self.prompt_tool = GlobalPromptStorage.local_search_engine_prompt
+
     async def build_index(self):
         pass
 
-    async def search(self, query: str, top_k: int = 20, *args, **kwargs) -> SearchResult:
+    async def a_search(self, query: str, top_k: int = 20, *args, **kwargs) -> SearchResult:
         """
         Find the most related entities/chunks/relations to the given query.
 
@@ -110,20 +114,24 @@ class LocalSearchEngine(BaseEngine):
 
         return search_result
 
-    def query(self, query: str) -> str:
+    async def a_query(self, query: str) -> str:
         """
         Perform RAG on knowledge graph using the local context.
         :param query: User query
         :return: RAG response
         """
-        from ragu.utils.default_prompts.search_engine_query_prompts import (
-            local_search_engine_prompt,
-            system_prompt,
+
+        context: SearchResult = await self.a_search(query)
+        truncated_contest: str = self.truncation(str(context))
+
+        return self.prompt_tool.forward(
+            self.client,
+            query=query,
+            context=truncated_contest
         )
 
-        context: SearchResult = asyncio.run(self.search(query))
-        truncated_contest: str = self.truncation(str(context))
-        return self.client.generate(
-            local_search_engine_prompt.format(query=query, context=truncated_contest),
-            system_prompt
-        )[0]
+    def search(self, query, *args, **kwargs) -> SearchResult:
+        return asyncio.run(self.a_search(query, *args, **kwargs))
+
+    def query(self, query: str, *args, **kwargs) -> str:
+        return asyncio.run(self.a_query(query))

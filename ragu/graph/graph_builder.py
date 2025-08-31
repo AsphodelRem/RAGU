@@ -1,25 +1,24 @@
 import asyncio
 import os
-from typing import List, Tuple, Any, Hashable, Dict, Type
 from dataclasses import asdict
+from typing import Any, Dict, Hashable, List, Tuple, Type
 
-import pandas as pd
 import networkx as nx
+import pandas as pd
 from tqdm import tqdm
 
-from ragu import Chunker
+from ragu.chunker.base_chunker import Chunker
+from ragu.common.global_parameters import GlobalPromptStorage
+from ragu.common.batch_generator import BatchGenerator
+from ragu.common.global_parameters import DEFAULT_FILENAMES, storage_run_dir
+from ragu.common.llm import BaseLLM
+from ragu.common.logger import log_outputs, logging
+
+from ragu.graph.knowledge_graph import GraphArtifacts, KnowledgeGraph
+from ragu.graph.types import Community, Entity, Relation
 from ragu.storage.base_storage import BaseKVStorage
 from ragu.storage.json_storage import JsonKVStorage
 from ragu.triplet.base_triplet import TripletExtractor
-from ragu.common.llm import BaseLLM
-from ragu.graph.types import Relation, Entity, Community
-from ragu.utils.parse_json_output import extract_json
-from ragu.utils.default_prompts.artifact_summarization_prompts import artifacts_summarization_prompt
-from ragu.common.batch_generator import BatchGenerator
-from ragu.graph.knowledge_graph import KnowledgeGraph, GraphArtifacts
-from ragu.common.logger import log_outputs
-from ragu.common.global_parameters import storage_run_dir, DEFAULT_FILENAMES
-from ragu.common.logger import logging
 
 
 class GraphConstructor:
@@ -60,14 +59,17 @@ class CommunitySummarizer:
     """
     Generates summaries for communities using an LLM client.
     """
+    def __init__(self):
+        self.prompt_tool = GlobalPromptStorage.community_summarizer_prompt
 
-    @staticmethod
-    def get_community_summaries(communities: List[Community], client: BaseLLM, batch_size: int) -> List[dict]:
+    def get_community_summaries(
+            self,
+            communities: List[Community],
+            client: BaseLLM,
+            batch_size: int,
+    ) -> List[dict]:
         """
         Generate summaries for each community using a language model (LLM).
-
-        This function composes a textual representation of each community (including its entities
-        and relations) and uses the LLM client to generate a summary.
 
         :param communities: A list of Community objects to summarize.
         :param client: An API client for interacting with the LLM.
@@ -81,11 +83,9 @@ class CommunitySummarizer:
         ) -> str:
             """
             Compose a textual representation of a community.
-
-            :param entities: A list of tuples containing entity_name names and descriptions.
-            :param relations: A list of tuples containing source_entity, target_entity, and relation descriptions.
-            :return: A formatted string representing the community.
             """
+
+            # TODO: do it in more flexible way
             vertices_str = ",\n".join(
                 f"Сущность: {entity}, описание: {description}" for entity, description in entities
             )
@@ -94,35 +94,29 @@ class CommunitySummarizer:
             )
             return f"{vertices_str}\n\nОтношения:\n{relations_str}"
 
-        from ragu.utils.default_prompts.community_summary_prompt import generate_community_report
-
         summaries: list[dict] = []
         batch_generator = BatchGenerator(communities, batch_size=batch_size)
+
         for batch in tqdm(
                 batch_generator.get_batches(),
                 desc="Community summary",
                 total=len(batch_generator)
         ):
-            community_text = [
-                compose_community_string(community.entities, community.relations)
+            community_texts = [{"context": compose_community_string(community.entities, community.relations)}
                 for community in batch
             ]
 
-            generated_community_summaries = client.generate(
-                community_text,
-                generate_community_report,
+            parsed_summaries = self.prompt_tool.batch_forward(
+                client,
+                community_texts
             )
 
-            for community, raw_generated_community_summary in zip(batch, generated_community_summaries):
-                parsed = extract_json(raw_generated_community_summary)
-                if parsed is None:
-                    logging.warning(f"Bad JSON: {raw_generated_community_summary}")
-
+            for community, parsed_summary in zip(batch, parsed_summaries):
                 summaries.append(
                     {
                         "cluster_id": community.cluster_id,
                         "level": community.level,
-                        "community_report": parsed,
+                        "community_report": parsed_summary,
                         "entities": community.entities,
                         "relations": community.relations
                     }
@@ -141,9 +135,16 @@ class EntitySummarizer:
     A class for summarizing entity descriptions by merging and processing them using an LLM client.
     """
 
-    @staticmethod
-    def extract_summary(entities_df: pd.DataFrame, client: BaseLLM, batch_size: int,
-                        summarize_with_llm: bool = False) -> pd.DataFrame:
+    def __init__(self):
+        self.prompt_tool = GlobalPromptStorage.entity_summarizer_prompt
+
+    def extract_summary(
+            self,
+            entities_df: pd.DataFrame,
+            client: BaseLLM,
+            batch_size: int,
+            summarize_with_llm: bool = False
+    ) -> pd.DataFrame:
         """
         Extracts and summarizes entity_name descriptions from raw data.
 
@@ -155,7 +156,7 @@ class EntitySummarizer:
         """
 
         merged_df = EntitySummarizer.merge_entities(entities_df)
-        return EntitySummarizer.summarize(merged_df, client, batch_size) if summarize_with_llm else merged_df
+        return self.summarize(merged_df, client, batch_size) if summarize_with_llm else merged_df
 
     @staticmethod
     def merge_entities(entities_df: pd.DataFrame) -> pd.DataFrame:
@@ -172,8 +173,7 @@ class EntitySummarizer:
             "chunk_id": lambda x: list(set(x))  # Get only unique chunks id
         }).rename(columns={"entity_name": "description_count"}).reset_index()
 
-    @staticmethod
-    def summarize(data: pd.DataFrame, client, batch_size: int) -> pd.DataFrame:
+    def summarize(self, data: pd.DataFrame, client, batch_size: int) -> pd.DataFrame:
         """
         Summarizes entity_name descriptions using an LLM client if an entity_name has multiple descriptions.
 
@@ -194,13 +194,11 @@ class EntitySummarizer:
                 desc="Summarizing entity descriptions",
                 total=len(batch_generator)
         ):
-            texts = [f"Сущность: {row["entity_name"]}\nОписание: {row["description"]}" for row in batch]
-            responses.extend(client.generate(texts, artifacts_summarization_prompt["summarize_entity_descriptions"]))
+            #TODO: Do it in more flexible way
+            texts = [{"context": f"Сущность: {row["entity_name"]}\nОписание: {row["description"]}"} for row in batch]
+            output = self.prompt_tool.batch_forward(client, texts)
+            responses.extend(output)
 
-        responses = [
-            parsed["description"] if (parsed := extract_json(resp)) else None
-            for resp in responses
-        ]
         if len(responses) != len(multi_desc):
             logging.warning(
                 f"Failed to summarize some descriptions. "
@@ -219,10 +217,16 @@ class RelationSummarizer:
     """
     A class for summarizing relationship descriptions by merging and processing them using an LLM client.
     """
+    def __init__(self):
+        self.prompt_tool = GlobalPromptStorage.community_summarizer_prompt
 
-    @staticmethod
-    def extract_summary(relationships_df: pd.DataFrame, client: Any, batch_size: int,
-                        summarize_with_llm: bool = False) -> pd.DataFrame:
+    def extract_summary(
+            self,
+            relationships_df: pd.DataFrame,
+            client: Any,
+            batch_size: int,
+            summarize_with_llm: bool = False
+    ) -> pd.DataFrame:
         """
         Extracts and summarizes relationship descriptions from raw data.
 
@@ -233,7 +237,7 @@ class RelationSummarizer:
         :param batch_size: Number of rows to process in each batch.
         """
         merged_df = RelationSummarizer.merge_relationships(relationships_df)
-        return RelationSummarizer.summarize(merged_df, client, batch_size) if summarize_with_llm else merged_df
+        return self.summarize(merged_df, client, batch_size) if summarize_with_llm else merged_df
 
     @staticmethod
     def merge_relationships(relationships: pd.DataFrame) -> pd.DataFrame:
@@ -250,8 +254,7 @@ class RelationSummarizer:
             "chunk_id": lambda x: list(set(x))  # Get only unique chunks id
         }).assign(description_count=lambda df: df["chunk_id"].apply(len)).reset_index()
 
-    @staticmethod
-    def summarize(data: pd.DataFrame, client, batch_size: int) -> pd.DataFrame:
+    def summarize(self, data: pd.DataFrame, client, batch_size: int) -> pd.DataFrame:
         """
         Summarizes relationship descriptions using an LLM client if a relationship has multiple descriptions.
 
@@ -272,18 +275,21 @@ class RelationSummarizer:
                 batch_generator.get_batches(),
                 desc="Summarizing relationship descriptions",
                 total=len(batch_generator)):
+
+            # TODO: do it in more flexible way (move to jinja templates)
             texts = [
                 f"""
                 Сущность: {row["source_entity"]}, Целевая сущность: {row["target_entity"]}
                 Описание: {row["relationship_description"]}
                 """.strip() for row in batch
             ]
-            responses.extend(client.generate(texts, artifacts_summarization_prompt["summarize_relation_descriptions"]))
 
-        responses = [
-            parsed["description"] if (parsed := extract_json(resp)) else None
-            for resp in responses
-        ]
+            context = [{"context": text} for text in texts]
+            output = self.prompt_tool.batch_forward(
+                client,
+                context
+            )
+            responses.extend(output)
 
         if len(responses) != len(multi_desc):
             logging.warning(
@@ -327,6 +333,8 @@ class KnowledgeGraphBuilder:
             chunk_kv_storage_params: Dict[str, Any] = None,
             community_kv_storage_params: Dict[str, Any] = None,
             storage_folder: str = storage_run_dir,
+            auto_save: bool = True,
+            default_name: str = "knowledge_graph.gml"
     ):
         # Initialize the pipeline
         self.client = client
@@ -340,6 +348,8 @@ class KnowledgeGraphBuilder:
         self.max_cluster_size = max_cluster_size
         self.remove_isolated_nodes = remove_isolated_nodes
         self.take_strongest_components = take_strongest_components
+        self.auto_save = auto_save
+        self.default_name = default_name
 
         # Set options
         self.save_intermediate_results = save_intermediate_results
@@ -347,10 +357,14 @@ class KnowledgeGraphBuilder:
         self.community_kv_storage_params = community_kv_storage_params if community_kv_storage_params else {}
 
         # Set key-value storage
-        self.community_kv_storage_params["filename"] = os.path.join(storage_folder, DEFAULT_FILENAMES[
-            "community_summary_kv_storage_name"])
-        self.chunk_kv_storage_params["filename"] = os.path.join(storage_folder,
-                                                                DEFAULT_FILENAMES["chunks_kv_storage_name"])
+        self.community_kv_storage_params["filename"] = os.path.join(
+            storage_folder,
+            DEFAULT_FILENAMES["community_summary_kv_storage_name"]
+        )
+        self.chunk_kv_storage_params["filename"] = os.path.join(
+            storage_folder,
+            DEFAULT_FILENAMES["chunks_kv_storage_name"]
+        )
 
         self.chunks_kv_storage = kv_storage_type(**self.chunk_kv_storage_params)
         self.communities_kv_storage = kv_storage_type(**self.community_kv_storage_params)
@@ -426,13 +440,15 @@ class KnowledgeGraphBuilder:
         entities, relationships = self.triplet_extractor(chunks, client=self.client)
 
         # Step 3: Summarize entities' and relationships' descriptions
-        summarized_entities = EntitySummarizer.extract_summary(
-            entities,
+        entity_summarizer = EntitySummarizer()
+        summarized_entities = entity_summarizer.extract_summary(
+            entities_df=entities,
             client=self.client,
             batch_size=self.batch_size,
             summarize_with_llm=self.summarize_entities
         )
-        summarized_relationships = RelationSummarizer.extract_summary(
+        relation_summarizer = RelationSummarizer()
+        summarized_relationships = relation_summarizer.extract_summary(
             relationships,
             client=self.client,
             batch_size=self.batch_size,
@@ -461,7 +477,8 @@ class KnowledgeGraphBuilder:
         communities = knowledge_graph.detect_communities()
 
         # Step 6: Get community summaries
-        summary = CommunitySummarizer.get_community_summaries(
+        community_summarizer = CommunitySummarizer()
+        summary = community_summarizer.get_community_summaries(
             communities=communities,
             client=self.client,
             batch_size=self.batch_size
@@ -472,6 +489,8 @@ class KnowledgeGraphBuilder:
         knowledge_graph.save_community_summary(
             os.path.join(storage_run_dir, DEFAULT_FILENAMES["summary_name"])  # type: ignore
         )
+
+        asyncio.run(self.save_artifacts(chunks, summary))
 
         knowledge_graph.artifacts = GraphArtifacts(
             entities=entities,
@@ -486,7 +505,8 @@ class KnowledgeGraphBuilder:
             log_outputs(summarized_entities, "summarized_entities")
             log_outputs(summarized_relationships, "summarized_relationships")
 
-        asyncio.run(self.save_artifacts(chunks, summary))
+        if self.auto_save:
+            knowledge_graph.save_graph(self.default_name)
 
         return knowledge_graph
 
