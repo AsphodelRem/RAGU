@@ -8,12 +8,14 @@ import pandas as pd
 from tqdm import tqdm
 
 from ragu.chunker.base_chunker import Chunker
-from ragu.common.global_parameters import GlobalPromptStorage
 from ragu.common.batch_generator import BatchGenerator
-from ragu.common.global_parameters import DEFAULT_FILENAMES, storage_run_dir
+from ragu.common.global_parameters import (
+    DEFAULT_FILENAMES,
+    GlobalPromptStorage,
+    storage_run_dir,
+)
 from ragu.common.llm import BaseLLM
 from ragu.common.logger import log_outputs, logging
-
 from ragu.graph.knowledge_graph import GraphArtifacts, KnowledgeGraph
 from ragu.graph.types import Community, Entity, Relation
 from ragu.storage.base_storage import BaseKVStorage
@@ -77,23 +79,6 @@ class CommunitySummarizer:
         :return: A list of summaries, one for each community.
         """
 
-        def compose_community_string(
-                entities: List[Tuple[Hashable, str]],
-                relations: List[Tuple[Hashable, Hashable, str]]
-        ) -> str:
-            """
-            Compose a textual representation of a community.
-            """
-
-            # TODO: do it in more flexible way
-            vertices_str = ",\n".join(
-                f"Сущность: {entity}, описание: {description}" for entity, description in entities
-            )
-            relations_str = "\n".join(
-                f"{source} -> {target}, описание отношения: {description}" for source, target, description in relations
-            )
-            return f"{vertices_str}\n\nОтношения:\n{relations_str}"
-
         summaries: list[dict] = []
         batch_generator = BatchGenerator(communities, batch_size=batch_size)
 
@@ -102,9 +87,7 @@ class CommunitySummarizer:
                 desc="Community summary",
                 total=len(batch_generator)
         ):
-            community_texts = [{"context": compose_community_string(community.entities, community.relations)}
-                for community in batch
-            ]
+            community_texts = [{"entities": community.entities, "relations": community.relations} for community in batch]
 
             parsed_summaries = self.prompt_tool.batch_forward(
                 client,
@@ -194,10 +177,13 @@ class EntitySummarizer:
                 desc="Summarizing entity descriptions",
                 total=len(batch_generator)
         ):
-            #TODO: Do it in more flexible way
-            texts = [{"context": f"Сущность: {row["entity_name"]}\nОписание: {row["description"]}"} for row in batch]
-            output = self.prompt_tool.batch_forward(client, texts)
-            responses.extend(output)
+            texts = [{"entity": row} for row in batch]
+            outputs = self.prompt_tool.batch_forward(client, texts)
+            responses = [
+                parsed["description"] if parsed else None
+                for parsed in outputs
+            ]
+            responses.extend(responses)
 
         if len(responses) != len(multi_desc):
             logging.warning(
@@ -218,7 +204,7 @@ class RelationSummarizer:
     A class for summarizing relationship descriptions by merging and processing them using an LLM client.
     """
     def __init__(self):
-        self.prompt_tool = GlobalPromptStorage.community_summarizer_prompt
+        self.prompt_tool = GlobalPromptStorage.relation_summarizer_prompt
 
     def extract_summary(
             self,
@@ -277,19 +263,14 @@ class RelationSummarizer:
                 total=len(batch_generator)):
 
             # TODO: do it in more flexible way (move to jinja templates)
-            texts = [
-                f"""
-                Сущность: {row["source_entity"]}, Целевая сущность: {row["target_entity"]}
-                Описание: {row["relationship_description"]}
-                """.strip() for row in batch
-            ]
-
-            context = [{"context": text} for text in texts]
-            output = self.prompt_tool.batch_forward(
+            context = [{"relation": row} for row in batch]
+            outputs = self.prompt_tool.batch_forward(
                 client,
                 context
             )
-            responses.extend(output)
+
+            descriptions = [parsed["description"] if parsed else None for parsed in outputs]
+            responses.extend(descriptions)
 
         if len(responses) != len(multi_desc):
             logging.warning(
