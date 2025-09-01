@@ -1,10 +1,10 @@
-import os
 import asyncio
-from typing import Type, Optional, Dict
+import os
+from typing import Dict, Optional, Type
 
-from ragu.common.logger import logging
 from ragu.common.embedder import BaseEmbedder
-from ragu.common.global_parameters import storage_run_dir, DEFAULT_FILENAMES
+from ragu.common.global_parameters import DEFAULT_FILENAMES, storage_run_dir
+from ragu.common.logger import logging
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.storage.base_storage import BaseKVStorage, BaseVectorStorage
 from ragu.storage.json_storage import JsonKVStorage
@@ -74,8 +74,8 @@ class Index:
         try:
             data_for_vdb = {
                 compute_mdhash_id(dp[0], prefix="ent-"): {
-                    "content": dp[0] + dp[1].get("description", ""),
                     "entity_name": dp[0],
+                    "content": dp[0] + " - " +  dp[1].get("description", ""),
                 }
                 for dp in knowledge_graph.graph.nodes.data()
             }
