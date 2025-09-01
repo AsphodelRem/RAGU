@@ -179,11 +179,11 @@ class EntitySummarizer:
         ):
             texts = [{"entity": row} for row in batch]
             outputs = self.prompt_tool.batch_forward(client, texts)
-            responses = [
+            batch_responses = [
                 parsed["description"] if parsed else None
                 for parsed in outputs
             ]
-            responses.extend(responses)
+            responses.extend(batch_responses)
 
         if len(responses) != len(multi_desc):
             logging.warning(
