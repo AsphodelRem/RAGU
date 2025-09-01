@@ -77,7 +77,7 @@ class TripletLLM(TripletExtractor):
 
             if self.validate:
                 validation_inputs = [
-                    {"context": text, "triplets": parsed_data}
+                    {"context": text, "artifacts": parsed_data}
                     for text, parsed_data in zip(texts, parsed_batch)
                 ]
                 parsed_batch = self.artifact_validation_prompt_tool.batch_forward(client, validation_inputs)
