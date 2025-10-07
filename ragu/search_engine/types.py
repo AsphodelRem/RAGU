@@ -1,38 +1,63 @@
 from dataclasses import dataclass, field
 
+from jinja2 import Template
+
 
 @dataclass
-class SearchResult:
+class LocalSearchResult:
     entities: list=field(default_factory=list)
     relations: list=field(default_factory=list)
     summaries: list=field(default_factory=list)
     chunks: list=field(default_factory=list)
 
-    _default_entity_section_title: str = "**Сущности**\nСущность, тип сущности, описание сущности"
-    _default_relations_section_title: str = "**Отношения**\nСущность-источник, целевая сущность, описание отношения, ранг отношения"
-    _default_summaries_section_title: str = "**Саммари**"
-    _default_chunks_section_title: str = "**Тексты**"
+    _template: Template = Template(
+"""
+**Entities**\nEntity, entity type, entity description
+{%- for e in entities %}
+{{ e.entity_name }}, {{ e.entity_type }}, {{ e.description }}
+{%- endfor %}
+
+**Relations**\nSubject, object, relation description, rank
+{%- for r in relations %}
+{{ r.subject_name }}, {{ r.object_name }}, {{ r.description }}, {{ r.rank }}
+{%- endfor %}
+
+{%- if summaries %}
+Summary
+{%- for s in summaries %}
+{{ s }}
+{%- endfor %}
+{% endif %}
+
+{%- if chunks %}
+Chunks
+{%- for c in chunks %}
+{{ c.content }}
+{%- endfor %}
+{% endif %}
+"""
+    )
 
     def __str__(self) -> str:
-        entity_section = "\n".join(
-            [
-                f"{entity["entity_name"]}, {entity.get("entity_type")}, {entity.get("description")}"
-                for entity in self.entities
-            ]
+        return self._template.render(
+            entities=self.entities,
+            relations=self.relations,
+            summaries=self.summaries,
+            chunks=self.chunks,
         )
 
-        relations_section = "\n".join(
-            [
-                f"{relation["source_entity"]}, {relation["target_entity"]}, {relation.get("description")}, {relation.get("rank")}"
-                for relation in self.relations
-            ]
-        )
 
-        summary_section = "\n".join(self.summaries)
-        chunks_section = "\n".join(self.chunks)
-        return (
-            f"{self._default_entity_section_title}\n{entity_section}\n\n" 
-            f"{self._default_relations_section_title}\n{relations_section}\n\n"
-            f"{self._default_summaries_section_title}\n{summary_section}\n\n" 
-            f"{self._default_chunks_section_title}\n{chunks_section}\n\n"
-        )
+@dataclass
+class GlobalSearchResult:
+    insights: list=field(default_factory=list)
+
+    _template: Template = Template(
+        """
+        {%- for insight in insights %} 
+        {{ loop.index}}. Insight: {{ insight.response }}, rating: {{ insight.rating }}
+        {%- endfor %}
+        """.strip()
+    )
+
+    def __str__(self) -> str:
+        return self._template.render(insights=self.insights)
