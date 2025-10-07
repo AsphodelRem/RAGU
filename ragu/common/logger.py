@@ -1,44 +1,20 @@
-import json
-import os
-import openai
 import logging
-import pandas as pd
+import sys
 
-from ragu.common.global_parameters import logs_dir, current_time, run_output_dir
-
+import openai
 
 openai._utils._logs.logger.setLevel(logging.WARNING)
 openai._utils._logs.httpx_logger.setLevel(logging.WARNING)
 
+from loguru import logger
 
-log_filename = os.path.join(logs_dir, f"ragu_logs_{current_time}.log")
-logging.basicConfig(
-    level=logging.INFO,
-    filename=log_filename,
-    filemode="w",
-    format="%(asctime)s %(levelname)s %(message)s"
+logger.remove()
+logger.add(
+    sys.stdout,
+    colorize=True,
+    enqueue=True,
+    level="INFO",
+    format="<cyan>{time:HH:mm:ss}</cyan> | <level>{level: <8}</level> | <level>{message}</level>"
 )
 
-def log_outputs(df: pd.DataFrame, filename: str):
-    """
-    Save DataFrame in specified directory.
-
-    :param df: DataFrame to save.
-    :param filename: filename for the saved file.
-    """
-    filepath = os.path.join(run_output_dir, f"{filename}.parquet")
-    df.to_parquet(filepath, index=False)
-    logging.info(f"Outputs saved in: {filepath}")
-
-def log_metrics(metrics: dict, filename: str):
-    """
-    Log metrics in specified directory.
-
-    :param filename:
-    :param metrics: metrics to save.
-    """
-    metrics_filepath = os.path.join(run_output_dir, f"{filename}.json")
-    with open(metrics_filepath, "w") as f:
-        json.dump(metrics, f)
-    logging.info(f"Metrics saved in: {metrics_filepath}")
-
+__all__ = ["logger"]
