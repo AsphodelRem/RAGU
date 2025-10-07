@@ -1,1 +1,1 @@
-from ragu.triplet.triplet_makers import TripletLLM
+from ragu.triplet.llm_artifact_extractor import ArtifactsExtractorLLM
