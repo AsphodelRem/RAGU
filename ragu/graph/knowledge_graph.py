@@ -1,220 +1,178 @@
-import json
-import os
-from collections import defaultdict
-from dataclasses import dataclass
-from typing import Optional, Dict, Union, cast
+import asyncio
+from typing import List
 
-import networkx as nx
-import pandas as pd
-from graspologic.partition import HierarchicalClusters, hierarchical_leiden
-from graspologic.utils import largest_connected_component
-from pyvis.network import Network
+from ragu.graph.graph_builder_pipeline import InMemoryGraphBuilder
+from ragu.graph.types import Entity, Relation, CommunitySummary
+from ragu.storage.index import Index
 
-from ragu.common.global_parameters import run_output_dir
-from ragu.graph.types import Community
+from ragu.common.global_parameters import Settings
 
 
-@dataclass
-class GraphArtifacts:
-    chunks: pd.DataFrame
-    entities: pd.DataFrame
-    relations: pd.DataFrame
-
-
+# TODO: implement all methods
 class KnowledgeGraph:
-    """
-    A pipeline for building, querying, and visualizing a knowledge graph using extracted triplets
-    and community-based summarization.
-    """
-
     def __init__(
             self,
-            path_to_graph: Optional[str] = None,
-            path_to_community_summary: Optional[str] = None
-    ) -> None:
-        """
-        Initializes the KnowledgeGraph pipeline with configured components for chunking and triplet extraction
-        """
-        self.graph: nx.Graph = None
-        self.community_summary: list = None
-        self.artifacts: "GraphArtifacts" = None
+            extraction_pipeline: InMemoryGraphBuilder,
+            index: Index,
+            make_community_summary: bool = True,
+            remove_isolated_nodes: bool = True,
+            language: str = "english",
+    ):
+        self.pipeline = extraction_pipeline
+        self.index = index
+        self.make_community_summary = make_community_summary
+        self.remove_isolated_nodes = remove_isolated_nodes
+        self.language = language
+        self.pipeline.language = language
 
-        if path_to_graph:
-            self.load_graph(path_to_graph)
-        if path_to_community_summary:
-            self.load_community_summary(path_to_community_summary)
+        self._id_to_entity_map = {}
+        self._id_to_relation_map = {}
 
-    def merge(self, other: "KnowledgeGraph") -> "KnowledgeGraph":
-        if self.graph is None:
-            self.graph = other.graph
-        else:
-            self.graph = nx.compose(self.graph, other.graph)
+        # Initialize storage folder if it doesn't exist
+        Settings.init_storage_folder()
 
-        return self
+    async def build_from_docs(self, docs) -> "KnowledgeGraph":
+        entities, relations, chunks = await self.pipeline.extract_graph(docs)
 
-    def load_knowledge_graph(
-            self,
-            path_to_graph: str,
-            path_to_community_summary: Optional[str] = None
-    ) -> "KnowledgeGraph":
-        """
-        Loads a previously saved knowledge graph and optionally its community summary.
+        # Add entities and relations
+        await self.add_entity(entities)
+        await self.add_relation(relations)
 
-        :param path_to_graph: Path to the saved graph file.
-        :param path_to_community_summary: Path to the saved community summary file (optional).
-        """
-        self.load_graph(path_to_graph)
-        if path_to_community_summary:
-            self.load_community_summary(path_to_community_summary)
+        # Save chunks
+        await self.index.insert_chunks(chunks)
+        await self.index.entity_vector_db.index_done_callback()
+        await self.index.relation_vector_db.index_done_callback()
 
-        return self
+        if self.make_community_summary:
+            communities, summaries = await self.high_level_build()
+            await self.index.insert_communities(communities)
+            await self.index.insert_community_summaries(summaries)
 
-    def load_graph(self, path: str) -> "KnowledgeGraph":
-        """
-        Loads a knowledge graph from a GML file.
-
-        :param path: Path to the GML file.
-        """
-        self.graph = nx.read_gml(path)
-        return self
-
-    def save_graph(self, path: str) -> "KnowledgeGraph":
-        """
-        Saves the current knowledge graph to a GML file.
-
-        :param path: Path where the graph will be saved.
-        """
-        nx.write_gml(self.graph, path)
-        return self
-
-    def save_community_summary(self, path: str) -> "KnowledgeGraph":
-        """
-        Saves the community summary to a json.
-
-        :param path: Path where the summary will be saved.
-        """
-        if self.community_summary is None:
-            raise ValueError("No community summary available to save.")
-
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.community_summary, f, ensure_ascii=False, indent=4)
+        await self.index.graph_backend.index_done_callback()
 
         return self
 
-    def load_community_summary(self, path: str) -> "KnowledgeGraph":
-        """
-        Loads the community summary from a json.
-
-        :param path: Path to the saved summary file.
-        """
-        with open(path, "r", encoding="utf-8") as f:
-            self.community_summary = {int(k): v for k, v in json.load(f).items()}
-
-        return self
-
-    def visualize(self, where_to_save: str = "knowledge_graph.html") -> "KnowledgeGraph":
-        """
-        Save a visualization of the knowledge graph in the HTML file.
-        """
-        if self.graph is None:
-            raise RuntimeError("Graph is not built. Please build or load the graph first.")
-
-        net = Network()
-        net.from_nx(self.graph)
-        net.show(where_to_save)
-
-        return self
-
-    def detect_communities(self, max_cluster_size: int=5) -> list[Community]:
-        """
-        Detect hierarchical communities in a graph using the Leiden algorithm.
-
-        This function identifies communities at multiple hierarchical levels and returns
-        a nested dictionary containing nodes and edges for each community at every level.
-        """
-        community_mapping: HierarchicalClusters = hierarchical_leiden(
-            self.graph,
-            max_cluster_size=max_cluster_size,
+    async def high_level_build(self):
+        communities = await self.index.graph_backend.cluster()
+        summaries = await self.pipeline.get_community_summary(
+            communities=communities
         )
+        return communities, summaries
 
-        # Structure: level -> cluster_id -> (nodes, edges)
-        communities: list[Community] = []
-        clusters = defaultdict(lambda: defaultdict(lambda: {"nodes": set(), "edges": set()}))
-        for partition in community_mapping:
-            level = partition.level
-            cluster_id = partition.cluster
-            node = partition.node
+    # entity CRUD
+    async def add_entity(self, entities: Entity | List[Entity]) -> "KnowledgeGraph":
+        if isinstance(entities, Entity):
+            entities = [entities]
 
-            self.graph.nodes[node]["clusters"].append({"level": level, "cluster_id": cluster_id})
-
-            clusters[level][cluster_id]["nodes"].add(node)
-
-            for neighbor in self.graph.neighbors(node):
-                if neighbor in clusters[level][cluster_id]["nodes"]:
-                    edge_data = self.graph.get_edge_data(node, neighbor)
-                    clusters[level][cluster_id]["edges"].add(
-                        (
-                            node,
-                            neighbor,
-                            edge_data.get("description", "")
-                        )
-                    )
-
-        # Convert to Community objects
-        communities: list[Community] = []
-
-        for level in clusters:
-            for cluster_id in clusters[level]:
-                nodes = clusters[level][cluster_id]["nodes"]
-                edges = clusters[level][cluster_id]["edges"]
-
-                subgraph = self.graph.subgraph(nodes)
-
-                entities = [
-                    (node, data.get("description", ""))
-                    for node, data in subgraph.nodes(data=True)
-                ]
-
-                relations = [(u, v, desc)for u, v, desc in edges]
-
-                communities.append(
-                    Community(
-                        entities=entities,
-                        relations=relations,
-                        level=level,
-                        cluster_id=cluster_id,
-                    )
+        batch_entities_to_vdb = []
+        for entity in entities:
+            if await self.index.graph_backend.has_node(entity.id):
+                entity_to_merge: Entity = await self.index.graph_backend.get_node(entity.id)
+                entity_to_past = Entity(
+                    id=entity_to_merge.id,
+                    entity_name=entity_to_merge.entity_name,
+                    entity_type=entity_to_merge.entity_type,
+                    description=entity_to_merge.description + entity.description,
+                    clusters=entity_to_merge.clusters + entity.clusters,
+                    source_chunk_id=list(set(entity_to_merge.source_chunk_id + entity.source_chunk_id)),
                 )
-
-        return communities
-
-    def has_node(self, node_id: str) -> bool:
-        return self.graph.has_node(node_id)
-
-    def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        return self.graph.has_edge(source_node_id, target_node_id)
-
-    def get_node(self, node_id: str) -> Union[dict, None]:
-        return self.graph.nodes.get(node_id)
-
-    def node_degree(self, node_id: str) -> int:
-        return self.graph.degree(node_id) if self.graph.has_node(node_id) else 0
-
-    def edge_degree(self, source_node_id: str, target_node_id: str) -> int:
-        return (self.graph.degree(source_node_id) if self.graph.has_node(source_node_id) else 0) + (
-            self.graph.degree(target_node_id) if self.graph.has_node(target_node_id) else 0
-        )
-
-    def get_edge(self, source_node_id: str, target_node_id: str) -> Union[dict, None]:
-        return self.graph.edges.get((source_node_id, target_node_id))
-
-    def take_stable_largest_connected_component(self) -> "KnowledgeGraph":
-        self.graph = largest_connected_component(self.graph)
+            else:
+                entity_to_past = entity
+            batch_entities_to_vdb.append(entity_to_past)
+            await self.index.graph_backend.upsert_node(entity_to_past)
+        await self.index.make_index(entities=batch_entities_to_vdb)
         return self
 
-    def remove_isolated_nodes(self) -> "KnowledgeGraph":
-        for node in list(self.graph.nodes):
-            if self.graph.degree(node) == 0:
-                self.graph.remove_node(node)
+    async def get_entity(self, entity_id) -> Entity | None:
+        if await self.index.graph_backend.has_node(entity_id):
+            return await self.index.graph_backend.get_node(entity_id)
+        return None
+
+    async def delete_entity(self, entity_id) -> "KnowledgeGraph":
+        self.index.graph_backend.delete_node(entity_id)
         return self
 
+    async def update_entity(self, entity_id, new_entity) -> "KnowledgeGraph":
+        ...
+
+    # relation CRUD
+    async def add_relation(self, relation: Relation | List[Relation]) -> "KnowledgeGraph":
+        if isinstance(relation, Relation):
+            relation = [relation]
+
+        relations_to_past = []
+        for relation in relation:
+            relation_to_merge: Relation = await self.index.graph_backend.get_edge(
+                relation.subject_id,
+                relation.object_id
+            )
+            if relation_to_merge:
+                relation_to_past = Relation(
+                    subject_id=relation_to_merge.subject_id,
+                    object_id=relation_to_merge.object_id,
+                    subject_name=relation_to_merge.subject_name,
+                    object_name=relation_to_merge.object_name,
+                    description=relation_to_merge.description + relation.description,
+                    relation_strength=sum([relation_to_merge.relation_strength, relation.relation_strength]) * 0.5,
+                    source_chunk_id=list(set(relation_to_merge.source_chunk_id + relation.source_chunk_id)),
+                )
+            else:
+                relation_to_past = relation
+            relations_to_past.append(relation_to_past)
+            await self.index.graph_backend.upsert_edge(relation_to_past)
+        await self.index.make_index(relations=relations_to_past)
+
+        return self
+
+    async def get_relation(self, subject_id, object_id) -> Relation | None:
+        return await self.index.graph_backend.get_edge(subject_id, object_id)
+
+    async def delete_relation(self, subject_id, object_id) -> "KnowledgeGraph":
+        await self.index.graph_backend.delete_edge(subject_id, object_id)
+
+    async def update_relation(self, relation_id, new_relation) -> "KnowledgeGraph":
+        ...
+
+    async def get_all_entity_relations(self, entity_id) -> List[Relation] | None:
+        if await self.index.graph_backend.has_node(entity_id):
+            return await self.index.graph_backend.get_node_edges(entity_id)
+        return None
+
+    # summary CRUD
+    def add_summary(self, summary) -> "KnowledgeGraph":
+        ...
+
+    def get_summary(self, summary_id) -> CommunitySummary | None:
+        ...
+
+    def delete_summary(self, summary_id) -> "KnowledgeGraph":
+        ...
+
+    def update_summary(self, summary_id, new_summary) -> "KnowledgeGraph":
+        ...
+
+    def find_similar_entities(self, entity) -> List[Entity]:
+        ...
+
+    def find_similar_relations(self, relation) -> List[Relation]:
+        ...
+
+    def find_similar_entity_by_query(self, query) -> List[Entity]:
+        ...
+
+    def find_similar_relation_by_query(self, query) -> List[Relation]:
+        ...
+
+    async def edge_degree(self, subject_id, object_id) -> int | None:
+        if await self.index.graph_backend.has_edge(subject_id, object_id):
+            return await self.index.graph_backend.get_edge_degree(subject_id, object_id)
+        else:
+            return None
+
+    async def get_neighbors(self, entity_id) -> List[Entity]:
+        if await self.index.graph_backend.has_node(entity_id):
+            relations = await self.index.graph_backend.get_node_edges(entity_id)
+            neighbors_candidates = await asyncio.gather(*[self.get_entity(relation.object_id) for relation in relations])
+            return [neighbor for neighbor in neighbors_candidates if neighbor]
+        else:
+            return []
