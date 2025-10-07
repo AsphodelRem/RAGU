@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import AnyStr, Any
+from typing import Any, AnyStr
 
 from pydantic_settings import BaseSettings
 
@@ -8,8 +8,8 @@ class Env(BaseSettings):
     """
     A configuration class that loads settings from environment variables using Pydantic.
 
-    This class defines the settings required to connect to an LLM API, such as the base URL 
-    and API key. These values are loaded from environment variables, as specified in the 
+    This class defines the settings required to connect to an LLM API, such as the base URL
+    and API key. These values are loaded from environment variables, as specified in the
     `.env` file.
 
     :param llm_base_url: The base URL for the LLM API.
@@ -27,7 +27,7 @@ class Env(BaseSettings):
         :param env_file: The file where environment variables are loaded from (e.g., `.env`).
         """
         env_file = ".env"
-        
+
     @classmethod
     def from_env(cls, env_path: str | None):
         """

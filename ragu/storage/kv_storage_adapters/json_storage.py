@@ -1,7 +1,7 @@
 # Based on https://github.com/gusye1234/nano-graphrag/blob/main/nano_graphrag/_storage/vdb_nanovectordb.py
 
-import os
 import json
+import os
 
 from ragu.common.global_parameters import storage_run_dir
 from ragu.storage.base_storage import BaseKVStorage
