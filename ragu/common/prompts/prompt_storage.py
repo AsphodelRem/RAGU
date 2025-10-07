@@ -1,199 +1,139 @@
-import logging
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Type
+from __future__ import annotations
 
-from jinja2 import Environment, FileSystemLoader, Template
+from dataclasses import dataclass
+from typing import Type, Tuple, List
+
+from jinja2 import Template
 from pydantic import BaseModel
 
-from ragu.common.llm import BaseLLM
-from ragu.common.prompts.structured_data_extractors import (
-    dummy_extractor,
-    json_extractor,
+from ragu.common.prompts.default_models import (
+    ArtifactsModel,
+    CommunityReportModel,
+    GlobalSearchResponseModel,
+    GlobalSearchContextModel,
+    DefaultResponseModel,
+    EntityDescriptionModel,
+    RelationDescriptionModel
+)
+from ragu.common.prompts.default_templates import (
+    DEFAULT_ARTIFACTS_EXTRACTOR_PROMPT,
+    DEFAULT_ARTIFACTS_VALIDATOR_PROMPT,
+    DEFAULT_COMMUNITY_REPORT_PROMPT,
+    DEFAULT_RELATIONSHIP_SUMMARIZER_PROMPT,
+    DEFAULT_ENTITY_SUMMARIZER_PROMPT,
+    DEFAULT_RESPONSE_ONLY_PROMPT,
+    DEFAULT_GLOBAL_SEARCH_CONTEXT_PROMPT,
+    DEFAULT_GLOBAL_SEARCH_PROMPT,
 )
 
 
 @dataclass
-class PromptTool:
-    prompt_template: str
-    extractor_func: Callable[[str], dict]
-    schema: Optional[Type[BaseModel]] = None
-    description: Optional[str] = None
-
-    def get_instruction(self, **kwargs) -> str:
-        """
-        Format the prompt with provided kwargs
-        """
-        try:
-            return Template(self.prompt_template).render(**kwargs)
-        except KeyError as e:
-            logging.error(f"Missing required parameter for prompt formatting: {e}")
-            raise ValueError(f"Missing required parameter: {e}")
-        except Exception as e:
-            logging.error(f"Error formatting prompt: {e}")
-            raise
-
-    def forward(self, llm: BaseLLM, **prompt_inputs) -> dict:
-        prompt = self.get_instruction(**prompt_inputs)
-        structured_response = llm.generate(prompt)[0]
-        return self.extractor_func(structured_response)
-
-    def batch_forward(
-            self,
-            llm: BaseLLM,
-            batched_prompt_inputs: list[dict[str, Any]],
-    ) -> list[dict]:
-
-        prompts = []
-        for inputs in batched_prompt_inputs:
-            prompt = self.get_instruction(**inputs)
-            prompts.append(prompt)
-
-        responses = llm.generate(prompts)
-        return [self.extract_response(response) for response in responses]
-
-    def extract_response(self, response: str) -> dict:
-        return self.extractor_func(response)
-
-
-class PromptStorage:
+class PromptTemplate:
     """
-    Singleton class for managing prompt templates across the RAGU system.
-    Now with Jinja2 template support.
+    Represents a Jinja2-based prompt template for instruction generation.
+
+    Each template defines:
+      - a Jinja2 text pattern (`template`)
+      - an optional Pydantic schema for structured output validation (`schema`)
+      - a short description of its purpose (`description`)
+
+    The template can be rendered dynamically with keyword arguments,
+    supporting both single-instance and batched (list/tuple) generation.
     """
-    _language: str = "ru"
-    _instance: Optional['PromptStorage'] = None
-    _jinja_env: Optional[Environment] = None
-    _templates_base_path: str = Path(__file__).resolve().parent
 
-    def __new__(cls, *args, **kwargs):
-        if not cls._instance:
-            cls._instance = super().__new__(cls)
-            cls._instance._init_jinja_environment()
-            cls._instance.update_prompt_tools()
-        return cls._instance
+    template: str
+    schema: Type[BaseModel] = None
+    description: str = ""
 
-    # Prompt tools for knowledge graph creation
-    artifact_extractor_prompt: Optional[PromptTool] = None
-    artifacts_validation_prompt: Optional[PromptTool] = None
-    entity_summarizer_prompt: Optional[PromptTool] = None
-    relation_summarizer_prompt: Optional[PromptTool] = None
-    community_summarizer_prompt: Optional[PromptTool] = None
-
-    # Prompt tools for search engines
-    local_search_engine_prompt: Optional[PromptTool] = None
-    global_search_engine_prompt: Optional[PromptTool] = None
-    global_search_context_engine_prompt: Optional[PromptTool] = None
-
-    def _init_jinja_environment(self):
+    def __post_init__(self):
         """
-        Initialize Jinja2 environment with template loading
+        Compile the Jinja2 template upon initialization for faster rendering.
         """
+        self.compiled_template = Template(self.template)
 
-        self._jinja_env = Environment(
-            loader=FileSystemLoader(self._templates_base_path),
-            trim_blocks=True,
-            lstrip_blocks=True,
-            autoescape=False
-        )
-
-    def _load_jinja_template(self, template_name: str) -> str:
+    def get_instruction(self, **batch_kwargs) -> Tuple[List[str], Type[BaseModel]]:
         """
-        Load Jinja2 template for current language.
+        Render one or more prompt instructions using the template.
+
+        Supports both single-value rendering and batch processing
+        (when lists or tuples are passed as arguments).
+
+        :param batch_kwargs: Key-value pairs passed into the Jinja2 template.
+                             Lists and tuples trigger batch rendering.
+        :return: A tuple of (list of rendered instructions, associated schema).
         """
-        if self._jinja_env is None:
-            self._init_jinja_environment()
+        batch_lengths = {
+            key: len(value) for key, value in batch_kwargs.items()
+            if isinstance(value, (list, tuple))
+        }
 
-        template_path = f"{self._language}/{template_name}.jinja2"
-        source, _, _ = self._jinja_env.loader.get_source(self._jinja_env, template_path)
-        return source
+        # No batched parameters → single instruction
+        if not batch_lengths:
+            return [self.compiled_template.render(**batch_kwargs)], self.schema
 
-    def set_language(self, language: str = "ru") -> None:
-        """
-        Set the language for prompt templates.
-        """
-        supported_languages = self.get_supported_languages()
-        if language not in supported_languages:
-            raise ValueError(f"{language} is an unsupported language. RAGU supports: {supported_languages}")
+        # Validate that all batched parameters have equal length
+        unique_lengths = set(batch_lengths.values())
+        if len(unique_lengths) > 1:
+            raise ValueError("All batch parameters must have the same length")
 
-        if self._language != language:
-            self._language = language
-            self.update_prompt_tools()
-            logging.info(f"Language changed to {language}, prompt tools will be reinitialized")
+        batch_size = next(iter(unique_lengths))
+        batch_params = []
+        for i in range(batch_size):
+            params = {}
+            for key, value in batch_kwargs.items():
+                if isinstance(value, (list, tuple)):
+                    params[key] = value[i]
+                else:
+                    params[key] = value
+            batch_params.append(params)
 
-    def get_supported_languages(self) -> List[str]:
-        """
-        Get list of supported languages by checking existing directories.
-        """
+        instructions = [
+            self.compiled_template.render(**params)
+            for params in batch_params
+        ]
 
-        languages = []
-        for item in Path(self._templates_base_path).iterdir():
-            if item.is_dir() and not item.name.startswith('.'):
-                languages.append(item.name)
+        return instructions, self.schema
 
-        return languages
 
-    def update_prompt_tools(self) -> None:
-        """
-        Update all prompt tools by loading Jinja2 templates for current language.
-        """
-        # Knowledge graph creation prompts
-        self.artifact_extractor_prompt = PromptTool(
-            prompt_template=self._load_jinja_template("artifacts_extractor_prompt"),
-            extractor_func=json_extractor
-        )
-
-        self.artifacts_validation_prompt = PromptTool(
-            prompt_template=self._load_jinja_template("artifacts_validation_prompt"),
-            extractor_func=json_extractor
-        )
-
-        self.entity_summarizer_prompt = PromptTool(
-            prompt_template=self._load_jinja_template("entity_description_summarization_prompt"),
-            extractor_func=json_extractor
-        )
-
-        self.relation_summarizer_prompt = PromptTool(
-            prompt_template=self._load_jinja_template("relation_description_summarization_prompt"),
-            extractor_func=json_extractor
-        )
-
-        self.community_summarizer_prompt = PromptTool(
-            prompt_template=self._load_jinja_template("community_summary_prompt"),
-            extractor_func=json_extractor
-        )
-
-        # Search engine prompts
-        self.local_search_engine_prompt = PromptTool(
-            prompt_template=self._load_jinja_template("local_search_engine_prompt"),
-            extractor_func=dummy_extractor
-        )
-
-        self.global_search_engine_prompt = PromptTool(
-            prompt_template=self._load_jinja_template("global_search_engine_prompt"),
-            extractor_func=json_extractor
-        )
-
-        self.global_search_context_engine_prompt = PromptTool(
-            prompt_template=self._load_jinja_template("global_search_context_prompt"),
-            extractor_func=json_extractor
-        )
-
-    def add_new_prompt_tool(self, name: str, prompt_tool: PromptTool):
-        setattr(self, name, prompt_tool)
-
-    def get_prompt_tool(self, tool_name: str) -> Optional[PromptTool]:
-        return getattr(self, tool_name, None)
-
-    def list_available_prompts(self) -> Dict[str, Dict[str, Any]]:
-        prompts = {}
-        for attr_name in dir(self):
-            if not attr_name.startswith('_') and attr_name.endswith('_prompt'):
-                prompt_tool = getattr(self, attr_name)
-                if isinstance(prompt_tool, PromptTool):
-                    prompts[attr_name] = {
-                        "prompt": prompt_tool.prompt_template,
-                        "schema": prompt_tool.schema,
-                        "description": prompt_tool.description,
-                    }
-        return prompts
+DEFAULT_PROMPT_TEMPLATES = {
+    "artifact_extraction": PromptTemplate(
+        template=DEFAULT_ARTIFACTS_EXTRACTOR_PROMPT,
+        schema=ArtifactsModel,
+        description="Prompt for extracting artifacts (entities and relations) from a text passage."
+    ),
+    "artifact_validation": PromptTemplate(
+        template=DEFAULT_ARTIFACTS_VALIDATOR_PROMPT,
+        schema=ArtifactsModel,
+        description="Prompt for validating extracted artifacts against a schema."
+    ),
+    "community_report": PromptTemplate(
+        template=DEFAULT_COMMUNITY_REPORT_PROMPT,
+        schema=CommunityReportModel,
+        description="Prompt for generating community summaries from contextual data."
+    ),
+    "entity_summarizer": PromptTemplate(
+        template=DEFAULT_ENTITY_SUMMARIZER_PROMPT,
+        schema=EntityDescriptionModel,
+        description="Prompt for summarizing entity descriptions."
+    ),
+    "relation_summarizer": PromptTemplate(
+        template=DEFAULT_RELATIONSHIP_SUMMARIZER_PROMPT,
+        schema=RelationDescriptionModel,
+        description="Prompt for summarizing relationship descriptions."
+    ),
+    "global_search_context": PromptTemplate(
+        template=DEFAULT_GLOBAL_SEARCH_CONTEXT_PROMPT,
+        schema=GlobalSearchContextModel,
+        description="Prompt for generating contextual information for a global search."
+    ),
+    "global_search": PromptTemplate(
+        template=DEFAULT_GLOBAL_SEARCH_PROMPT,
+        schema=GlobalSearchResponseModel,
+        description="Prompt for generating a synthesized global search response."
+    ),
+    "local_search": PromptTemplate(
+        template=DEFAULT_RESPONSE_ONLY_PROMPT,
+        schema=DefaultResponseModel,
+        description="Prompt for generating a local context-based search response."
+    ),
+}
