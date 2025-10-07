@@ -5,7 +5,7 @@ from typing import List, Tuple, Optional, Iterable
 from ragu.chunker.types import Chunk
 from ragu.graph.types import Entity, Relation
 from ragu.llm.base_llm import BaseLLM
-from ragu.triplet.base_triplet import BaseArtifactExtractor
+from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
 from ragu.triplet.types import NEREL_ENTITY_TYPES
 
 
