@@ -1,22 +1,19 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Any
-
-import pandas as pd
-
-from ragu.common.register import Registrable
+from typing import List, Sequence
+from ragu.chunker.types import Chunk
 
 
-class Chunker(ABC, Registrable):
+class BaseChunker(ABC):
     """
     Abstract base class for text chunking strategies.
     Should be subclassed with specific chunking implementations.
     """
-    
+
     def __init__(self) -> None:
         pass
-    
+
     @abstractmethod
-    def split(self, documents: str | List[str]) -> pd.DataFrame:
+    def split(self, documents: str | Sequence[str]) -> List[Chunk]:
         """
         Abstract method for splitting documents into smaller chunks.
         Must be implemented in subclasses.
@@ -26,7 +23,7 @@ class Chunker(ABC, Registrable):
         """
         pass
 
-    def __call__(self, documents: str | List[str]) -> pd.DataFrame:
+    def __call__(self, documents: str | List[str]) -> List[Chunk]:
         """
         Calls the chunker on a given list of documents.
 
@@ -34,6 +31,3 @@ class Chunker(ABC, Registrable):
         :return: List of text chunks.
         """
         return self.split(documents)
-
-
-

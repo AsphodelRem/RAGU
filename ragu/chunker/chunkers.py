@@ -1,24 +1,21 @@
-import pandas as pd
-import torch
-import numpy as np
 from typing import List
 
-from tqdm import tqdm
+import numpy as np
+import pandas as pd
 from razdel import sentenize
-from smart_chunker.chunker import SmartChunker
-from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
 
-from ragu.chunker.base_chunker import Chunker
-from ragu.utils.hash import compute_mdhash_id
+from ragu.chunker.base_chunker import BaseChunker
+from ragu.chunker.types import Chunk
+from ragu.utils.ragu_utils import compute_mdhash_id
 
 
-@Chunker.register("simple")
-class SimpleChunker(Chunker):
+class SimpleChunker(BaseChunker):
     """
     A simple chunker that splits text into fixed-size overlapping chunks.
     """
-    
-    def __init__(self, max_chunk_size: int, overlap: int) -> None:
+
+    def __init__(self, max_chunk_size: int, overlap: int=0) -> None:
         """
         Initializes the simple chunker.
 
@@ -29,7 +26,7 @@ class SimpleChunker(Chunker):
         self.max_chunk_size = max_chunk_size
         self.overlap = overlap
 
-    def split(self, documents: str | List[str]) -> pd.DataFrame:
+    def split(self, documents: str | List[str]) -> List[Chunk]:
         """
         Splits documents into fixed-size overlapping chunks.
 
@@ -60,18 +57,15 @@ class SimpleChunker(Chunker):
             if current_chunk.strip():
                 chunks.append(current_chunk.strip())
 
-        chunk_id = [compute_mdhash_id(chunk) for chunk in chunks]
-
-        return pd.DataFrame({"chunk": chunks, "chunk_id": chunk_id})
+        return [Chunk(content=text, chunk_order_idx=0, doc_id="") for text in chunks]
 
 
-@Chunker.register("semantic")
-class SemanticTextChunker(Chunker):
+class SemanticTextChunker(BaseChunker):
     """
     A semantic chunker that splits text based on sentence boundaries and semantic similarity.
     """
-    
-    def __init__(self, model_name: str, max_chunk_size: int) -> None:
+
+    def __init__(self, model_name: str, max_chunk_size: int, device='cuda:0',) -> None:
         """
         Initializes the semantic chunker.
 
@@ -79,16 +73,16 @@ class SemanticTextChunker(Chunker):
         :param max_chunk_size: Maximum chunk size in tokens.
         """
         super().__init__()
-        self.model = SentenceTransformer(model_name).to(self.get_device())
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            raise ImportError(
+                "The 'sentence_transformers' packages are required for the semantic chunker. "
+                "Please install it with 'pip install sentence_transformers'."
+            )
+        self.model = SentenceTransformer(model_name).to(device)
         self.model.eval()
         self.max_chunk_size = max_chunk_size
-
-    @staticmethod
-    def get_device() -> str:
-        """
-        Determines the appropriate device for model execution.
-        """
-        return "cuda" if torch.cuda.is_available() else "cpu"
 
     @staticmethod
     def split_text_by_chunks(text: str) -> List[str]:
@@ -146,13 +140,13 @@ class SemanticTextChunker(Chunker):
 
         min_similarity_idx = np.argmin(similarities)
         return (
-            self.join_chunks_by_semantics(
-                sentences[: min_similarity_idx + 1], 
-                similarities[:min_similarity_idx]
-            )
-            + self.join_chunks_by_semantics(
-                sentences[min_similarity_idx + 1 :], 
-                similarities[min_similarity_idx + 1 :]
+                self.join_chunks_by_semantics(
+                    sentences[: min_similarity_idx + 1],
+                    similarities[:min_similarity_idx]
+                )
+                + self.join_chunks_by_semantics(
+            sentences[min_similarity_idx + 1:],
+            similarities[min_similarity_idx + 1:]
             )
         )
 
@@ -165,7 +159,7 @@ class SemanticTextChunker(Chunker):
         """
         if isinstance(documents, str):
             documents = [documents]
-        
+
         all_chunks = []
         for document in tqdm(documents, desc="Index creation: splitting documents"):
             sentences = self.split_text_by_chunks(document)
@@ -178,8 +172,7 @@ class SemanticTextChunker(Chunker):
         return pd.DataFrame({"chunk": all_chunks, "chunk_id": chunk_id})
 
 
-@Chunker.register("smart_chunker")
-class SmartSemanticChunker(Chunker):
+class SmartSemanticChunker(BaseChunker):
     def __init__(
             self,
             reranker_name='BAAI/bge-reranker-v2-m3',
@@ -190,6 +183,14 @@ class SmartSemanticChunker(Chunker):
             verbose=False
     ):
         super().__init__()
+        try:
+            from ragu.chunker.smart_chunker import SmartChunker
+        except ImportError:
+            raise ImportError(
+                "The 'smart_chunker' package is required for the smart semantic chunker. "
+                "Please install it with 'pip install smart_chunker'."
+            )
+
         self.chunker = SmartChunker(
             reranker_name=reranker_name,
             newline_as_separator=newline_as_separator,
@@ -199,7 +200,7 @@ class SmartSemanticChunker(Chunker):
             verbose=verbose
         )
 
-    def split(self, documents: str | List[str]) -> pd.DataFrame:
+    def split(self, documents: str | List[str]) -> List[Chunk]:
         if isinstance(documents, str):
             documents = [documents]
 
@@ -207,6 +208,4 @@ class SmartSemanticChunker(Chunker):
         for document in tqdm(documents, desc="Index creation: splitting documents"):
             chunks.extend(self.chunker.split_into_chunks(source_text=document))
 
-        chunk_id = [compute_mdhash_id(chunk) for chunk in chunks]
-
-        return pd.DataFrame({"chunk": chunks, "chunk_id": chunk_id})
+        return [Chunk(content=text, chunk_order_idx=0, doc_id="") for text in chunks]
