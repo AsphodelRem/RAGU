@@ -1,14 +1,10 @@
 import math
-from typing import List, Generator, Iterable, Any, Sized
+from typing import Any, Generator, Iterable, List, Sized
 
 
 class BatchGenerator:
     """
     A utility class for generating batches of data.
-
-    Attributes:
-        data (List[str]): The dataset to be batched.
-        batch_size (int): The size of each batch.
     """
 
     def __init__(self, data: Iterable[Any] | Sized, batch_size: int):
