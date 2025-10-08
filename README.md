@@ -23,12 +23,12 @@ Partially based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag/tr
 ## Install
 
 ```bash
-pip install ragu
+pip install graph_ragu
 ```
 
 If you want to use local models (via transformers etc), run:
 ```bash
-pip install ragu[local]
+pip install graph_ragu[local]
 ```
 
 ---
