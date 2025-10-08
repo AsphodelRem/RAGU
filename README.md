@@ -1,126 +1,122 @@
-# 📚 RAGU:  Retrieval-Augmented Graph Utility
+# RAGU:  Retrieval-Augmented Graph Utility
 
-## 🚀 Overview
-This project provides a pipeline for building a **Knowledge Graph**, indexing it, and performing **local search** over the indexed data. It leverages **LLM-based triplet extraction**, **semantic chunking**, and **embedding-based indexing** to enable efficient question-answering over structured knowledge in Russian language.
+<h4 align="center">
+  <a href="https://github.com/AsphodelRem/RAGU/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="RAGU is under the MIT license." alt="RAGU"/>
+  </a>
+  <img src="https://img.shields.io/badge/python->=3.10-blue">
+</h4>
+
+<h4 align="center">
+  <a href="#install">Install</a> |
+  <a href="#quickstart">Quickstart</a> 
+</h4>
+
+
+## Overview
+This project provides a pipeline for building a **Knowledge Graph**, indexing it, and performing search over the indexed data. It leverages **LLM-based triplet extraction**, **semantic chunking**, and **embedding-based indexing** to enable efficient question-answering over structured knowledge.
 
 Partially based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag/tree/main)
 
 ---
 
-## 📌 Features
-- **🔗 Build** a knowledge graph from raw text using semantic chunking and different triplet extractors.
-- **🔍 Search** the graph using a local search engine to answer queries.
-
----
-
-## 🛠 Installation
-Ensure you have all dependencies installed before running the script.
+## Install
 
 ```bash
-pip install -r requirements.txt
+pip install ragu
+```
+
+If you want to use local models (via transformers etc), run:
+```bash
+pip install ragu[local]
 ```
 
 ---
 
-## 📖 Usage Guide
+## Quickstart
 
-<details>
-  <summary>🔗 Building the Knowledge Graph</summary>
-  
-  1. Load the raw text data.
-  2. Use **SmartSemanticChunker** to split the text into meaningful segments.
-  3. Extract triplets (entities, relations and its descriptions) using **TripletLLM**.
-  4. Construct the **Knowledge Graph** using **KnowledgeGraphBuilder**.
-  5. Save the graph and its community summary.
-  
-  ```python
-from ragu.utils.io_utils import read_text_from_files
-from ragu.common.llm import RemoteLLM
-from ragu.graph.graph_builder import KnowledgeGraphBuilder, KnowledgeGraph
+### Simple example of building knowledge graph
+```python
+import asyncio
 
-from ragu.search_engine.local_search import LocalSearchEngine
-from ragu.common.embedder import STEmbedder
-from ragu.chunker.chunkers import SmartSemanticChunker
-from ragu.triplet.triplet_makers import TripletLLM
-from ragu.common.index import Index
+from ragu.chunker import SimpleChunker
+from ragu.embedder import STEmbedder
+from ragu.graph import KnowledgeGraph, InMemoryGraphBuilder
 
-# You can load your creditals from .env. Look into ragu/common/setting.py
+from ragu.llm import OpenAIClient
+
+from ragu.storage import Index
+from ragu.triplet import ArtifactsExtractorLLM
+from ragu.utils.ragu_utils import read_text_from_files
+
 LLM_MODEL_NAME = "..."
 LLM_BASE_URL = "..."
 LLM_API_KEY = "..."
-client = RemoteLLM(LLM_MODEL_NAME, LLM_BASE_URL, LLM_API_KEY)
 
-# Getting documnets from folders with .txt files
-text = read_text_from_files('/path/to/data/folder')
+async def main():
+    # Load .txt documents from folder
+    docs = read_text_from_files("/path/to/files")
+    
+    # Choose chunker 
+    chunker = SimpleChunker(max_chunk_size=2048, overlap=0)
 
-# Initialize a chunker
-chunker = SmartSemanticChunker(
-      reranker_name="/path/to/reranker_model",
-      max_chunk_length=512
+    # Import LLM client
+    client = OpenAIClient(
+        LLM_MODEL_NAME,
+        LLM_BASE_URL,
+        LLM_API_KEY,
+        max_requests_per_second=1,
+        max_requests_per_minute=60
+    )
+
+    # Set up artifacts extractor
+    artifact_extractor = ArtifactsExtractorLLM(
+        client=client, 
+        do_validation=True
+    )
+
+    # Initialize your embedder
+    embedder = STEmbedder(
+        "Alibaba-NLP/gte-multilingual-base",
+        trust_remote_code=True
+    )
+    # Set up graph storage and graph builder pipeline
+    pipeline = InMemoryGraphBuilder(client, chunker, artifact_extractor)
+    index = Index(
+        embedder,
+        graph_storage_kwargs={"clustering_params": {"max_cluster_size": 6}}
+    )
+    
+    # Build KG
+    knowledge_graph = await KnowledgeGraph(
+        extraction_pipeline=pipeline,           # Pass pipeline
+        index=index,                            # Pass storage
+        make_community_summary=True,            # Generate community summary if you want
+        language="russian",                     # You can set preferred language
+    ).build_from_docs(docs)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### Example of querying
+```python
+from ragu.search_engine import LocalSearchEngine
+
+search_engine = LocalSearchEngine(
+    client,
+    knowledge_graph,
+    embedder
 )
 
-# Initialize a triplet extractor 
-artifact_extractor = TripletLLM(
-      validate=False,
-      entity_list_type='nerel',
-)
+# Find relevant local context for the query
+print(await search_engine.a_search("Как переводится роман 'Ка́мо гряде́ши, Го́споди?'"))
 
-# Initialize a graph builder pipeline
-graph_builder = KnowledgeGraphBuilder(
-      client,
-      triplet_extractor=artifact_extractor,
-      chunker=chunker
-)
+# Or just past the query ang get final answer
+print(await search_engine.a_query("Как переводится роман 'Ка́мо гряде́ши, Го́споди?'"))
 
-# Run building 
-knowledge_graph = graph_builder.build(text)
-
-# Save results
-knowledge_graph.save_graph("graph.gml").save_community_summary("summary.json")
-  ```
-  
-</details>
-
-<details>
-  <summary>📌 Indexing the Graph</summary>
-  You can index graph data to use it in search engines.
-
-  1. Load the saved knowledge graph.
-  2. Use **STEmbedder** (or your custom embedder) to create embeddings for the nodes.
-  3. Generate an index with the **Index** class.
-  
-  ```python
-  embedder = STEmbedder("/path/to/model", trust_remote_code=True)
-  index = Index(embedder=embedder)
-  index.make_index(knowledge_graph)
-  ```
-  
-</details>
-
-<details>
-  <summary>🔍 Querying the Graph</summary>
-  
-  1. Initialize the **LocalSearchEngine** with the knowledge graph and index.
-  2. Query the graph to retrieve relevant information.
-  
-  ```python
-  local_search = LocalSearchEngine(
-      client,
-      knowledge_graph,
-      embedder, 
-      index
-)
-  
-print(local_search.query("Как звали детей последнего императора Российской Империи?"))
-  ```
-  
-</details>
-
----
-
-## 📝 Notes
-- Adjust chunking and triplet extraction parameters for better graph quality.
-- Use a high-quality embedding model for better indexing and retrieval performance.
-
-Happy graph-building! 🚀
+# Output:
+# [DefaultResponseModel(response="Роман 'Ка́мо гряде́ши, Го́споди?' переводится как 'Куда Ты идёшь, Господи?'")]
+# :)
+```
 
