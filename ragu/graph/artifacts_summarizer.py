@@ -5,6 +5,7 @@ from typing import List, Any
 import pandas as pd
 
 from ragu.common.base import RaguGenerativeModule
+from ragu.common.prompts.default_models import RelationDescriptionModel, EntityDescriptionModel
 from ragu.graph.types import Entity, Relation
 from ragu.llm.base_llm import BaseLLM
 
@@ -87,7 +88,7 @@ class ArtifactsDescriptionSummarizer(RaguGenerativeModule):
                 entity=entities_to_summarize,
                 language=self.language,
             )
-            response = await self.client.generate(prompt=prompt, schema=schema)
+            response: List[EntityDescriptionModel] = await self.client.generate(prompt=prompt, schema=schema) # type: ignore
 
             for i, summary in enumerate(response):
                 if summary:
@@ -121,7 +122,7 @@ class ArtifactsDescriptionSummarizer(RaguGenerativeModule):
                 relation=relations_to_summarize,
                 language=self.language,
             )
-            response = await self.client.generate(prompt=prompt, schema=schema)
+            response: List[RelationDescriptionModel] = await self.client.generate(prompt=prompt, schema=schema) # type: ignore
 
             for i, summary in enumerate(response):
                 if summary:
