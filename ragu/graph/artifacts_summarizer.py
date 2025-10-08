@@ -77,8 +77,8 @@ class ArtifactsDescriptionSummarizer(RaguGenerativeModule):
         entity_multi_desc = grouped_entities_df.loc[entity_mask]
         entity_single_desc = grouped_entities_df.loc[~entity_mask]
 
-        entity_multi_desc.drop("duplicate_count", axis=1, inplace=True)
-        entity_single_desc.drop("duplicate_count", axis=1, inplace=True)
+        entity_multi_desc = entity_multi_desc.drop("duplicate_count", axis=1)
+        entity_single_desc = entity_single_desc.drop("duplicate_count", axis=1)
 
         entities_to_summarize = []
         if len(entity_multi_desc) > 0 and self.use_llm_summarization:
