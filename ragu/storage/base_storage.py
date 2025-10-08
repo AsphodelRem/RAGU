@@ -104,6 +104,10 @@ class BaseGraphStorage(BaseStorage, ABC):
         ...
 
     @abstractmethod
+    async def remove_isolated_nodes(self):
+        ...
+
+    @abstractmethod
     async def cluster(self, **kwargs):
         ...
 

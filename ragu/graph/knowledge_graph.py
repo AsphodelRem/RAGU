@@ -38,6 +38,9 @@ class KnowledgeGraph:
         await self.add_entity(entities)
         await self.add_relation(relations)
 
+        if self.remove_isolated_nodes:
+            await self.index.graph_backend.remove_isolated_nodes()
+
         # Save chunks
         await self.index.insert_chunks(chunks)
         await self.index.entity_vector_db.index_done_callback()

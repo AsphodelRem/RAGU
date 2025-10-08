@@ -280,6 +280,14 @@ class NetworkXStorage(BaseGraphStorage):
         if self._graph.has_edge(src, dst):
             self._graph.remove_edge(src, dst)
 
+    async def remove_isolated_nodes(self) -> None:
+        """
+        Remove nodes with no edges from the graph.
+        """
+        for node in list(self._graph.nodes):
+            if self._graph.degree(node) == 0:
+                self._graph.remove_node(node)
+
     async def connected_components(self, mode: str = "weak") -> List[List[Hashable]]:
         """
         Compute connected components of the graph.
