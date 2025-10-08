@@ -1,7 +1,6 @@
-from typing import List
-
 import numpy as np
-import pandas as pd
+
+from typing import List
 from razdel import sentenize
 from tqdm import tqdm
 
@@ -15,7 +14,7 @@ class SimpleChunker(BaseChunker):
     A simple chunker that splits text into fixed-size overlapping chunks.
     """
 
-    def __init__(self, max_chunk_size: int, overlap: int=0) -> None:
+    def __init__(self, max_chunk_size: int, overlap: int = 0) -> None:
         """
         Initializes the simple chunker.
 
@@ -37,10 +36,14 @@ class SimpleChunker(BaseChunker):
         if isinstance(documents, str):
             documents = [documents]
 
-        chunks: list[str] = []
-        for document in documents:
+        all_chunks: list[Chunk] = []
+        for doc_idx, document in enumerate(tqdm(documents, desc="Splitting documents")):
             sentences = [chunk.text for chunk in sentenize(document)]
             current_chunk = ""
+            chunks: list[str] = []
+
+            # TODO: add doc_id from Document class, do not calculate it here
+            doc_id = compute_mdhash_id(document)
 
             for sentence in sentences:
                 if len(current_chunk) + len(sentence) <= self.max_chunk_size:
@@ -48,88 +51,86 @@ class SimpleChunker(BaseChunker):
                 else:
                     if current_chunk.strip():
                         chunks.append(current_chunk.strip())
-
                     if chunks and self.overlap > 0:
-                        current_chunk = chunks[-1][-self.overlap:] + " " + sentence + " "
+                        current_chunk = (
+                            chunks[-1][-self.overlap:] + " " + sentence + " "
+                        )
                     else:
                         current_chunk = sentence + " "
 
             if current_chunk.strip():
                 chunks.append(current_chunk.strip())
 
-        return [Chunk(content=text, chunk_order_idx=0, doc_id="") for text in chunks]
+            for i, text in enumerate(chunks):
+                all_chunks.append(
+                    Chunk(content=text, chunk_order_idx=i, doc_id=doc_id)
+                )
+
+        return all_chunks
 
 
 class SemanticTextChunker(BaseChunker):
     """
-    A semantic chunker that splits text based on sentence boundaries and semantic similarity.
+    A semantic chunker that splits text into coherent chunks
+    based on sentence boundaries and semantic similarity.
     """
 
-    def __init__(self, model_name: str, max_chunk_size: int, device='cuda:0',) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        max_chunk_size: int,
+        device: str = "cuda:0",
+    ) -> None:
         """
         Initializes the semantic chunker.
 
-        :param model_name: Name of the sentence transformer model.
-        :param max_chunk_size: Maximum chunk size in tokens.
+        :param model_name: Name of the sentence-transformer model.
+        :param max_chunk_size: Maximum number of tokens per chunk.
+        :param device: Device for model execution.
         """
         super().__init__()
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError:
             raise ImportError(
-                "The 'sentence_transformers' packages are required for the semantic chunker. "
-                "Please install it with 'pip install sentence_transformers'."
+                "Please install 'sentence_transformers' for SemanticTextChunker:\n"
+                "    pip install sentence_transformers"
             )
+
         self.model = SentenceTransformer(model_name).to(device)
         self.model.eval()
         self.max_chunk_size = max_chunk_size
 
     @staticmethod
-    def split_text_by_chunks(text: str) -> List[str]:
+    def _sentenize(text: str) -> List[str]:
         """
-        Splits text into sentence-based chunks using Razdel.
-
-        :param text: Input text.
-        :return: List of sentence-based chunks.
+        Splits text into sentences.
         """
         return [chunk.text for chunk in sentenize(text)]
 
-    def calculate_document_embedding(self, document: str) -> np.ndarray:
+    def _embed(self, texts: List[str]) -> np.ndarray:
         """
-        Computes the embedding of a given document using the sentence transformer model.
-
-        :param document: Input document.
-        :return: Document embedding as a NumPy array.
+        Computes embeddings for a list of sentences.
         """
-        embeddings = self.model.encode(document, convert_to_tensor=True, show_progress_bar=False)
+        embeddings = self.model.encode(
+            texts, convert_to_tensor=True, show_progress_bar=False
+        )
         return embeddings.cpu().numpy()
 
-    def compute_similarities(self, chunks: List[str]) -> np.ndarray:
+    @staticmethod
+    def _compute_similarities(embeddings: np.ndarray) -> np.ndarray:
         """
-        Computes pairwise cosine similarities between consecutive chunks.
-
-        :param chunks: List of sentence-based chunks.
-        :return: Similarity scores as a NumPy array.
+        Computes cosine similarities between consecutive embeddings.
         """
-        if len(chunks) < 2:
+        if len(embeddings) < 2:
             return np.array([])
+        sims = np.sum(embeddings[:-1] * embeddings[1:], axis=1)
+        return sims
 
-        embeddings = np.vstack(
-            [self.calculate_document_embedding(chunk) for chunk in chunks]
-        )
-        similarities = np.array([
-            np.dot(embeddings[i], embeddings[i + 1])
-            for i in range(len(chunks) - 1)
-        ])
-        return similarities
-
-    def join_chunks_by_semantics(self, sentences: List[str], similarities: np.ndarray) -> List[str]:
+    def _merge_sentences(self, sentences: List[str], similarities: np.ndarray) -> List[str]:
         """
-        Merges chunks based on semantic similarity, ensuring chunk sizes do not exceed the limit.
-
-        :param sentences: List of sentence-based chunks.
-        :param similarities: Pairwise similarity scores between chunks.
-        :return: List of semantically merged text chunks.
+        Recursively merges semantically similar sentences
+        until chunk length fits within max_chunk_size.
         """
         if len(sentences) < 2:
             return sentences
@@ -138,57 +139,75 @@ class SemanticTextChunker(BaseChunker):
         if n_tokens <= self.max_chunk_size:
             return [" ".join(sentences)]
 
-        min_similarity_idx = np.argmin(similarities)
+        min_idx = int(np.argmin(similarities))
         return (
-                self.join_chunks_by_semantics(
-                    sentences[: min_similarity_idx + 1],
-                    similarities[:min_similarity_idx]
-                )
-                + self.join_chunks_by_semantics(
-            sentences[min_similarity_idx + 1:],
-            similarities[min_similarity_idx + 1:]
-            )
+            self._merge_sentences(sentences[: min_idx + 1], similarities[:min_idx])
+            + self._merge_sentences(sentences[min_idx + 1:], similarities[min_idx + 1:])
         )
 
-    def split(self, documents: str | List[str]) -> pd.DataFrame:
+    def split(self, documents: str | List[str]) -> List[Chunk]:
         """
-        Splits text into semantically coherent chunks.
+        Splits input documents into semantically coherent chunks.
 
-        :param documents: List of input documents.
-        :return: List of semantically split text chunks.
+        :param documents: A single document or a list of documents.
+        :return: List of `Chunk` objects with content and IDs.
         """
         if isinstance(documents, str):
             documents = [documents]
 
-        all_chunks = []
-        for document in tqdm(documents, desc="Index creation: splitting documents"):
-            sentences = self.split_text_by_chunks(document)
-            similarities = self.compute_similarities(sentences)
-            chunks = self.join_chunks_by_semantics(sentences, similarities)
-            all_chunks.extend(chunks)
+        all_chunks: list[Chunk] = []
 
-        chunk_id = [compute_mdhash_id(chunk) for chunk in all_chunks]
+        for doc_idx, document in enumerate(tqdm(documents, desc="Splitting documents semantically")):
+            sentences = self._sentenize(document)
+            if not sentences:
+                continue
 
-        return pd.DataFrame({"chunk": all_chunks, "chunk_id": chunk_id})
+            embeddings = self._embed(sentences)
+            similarities = self._compute_similarities(embeddings)
+            merged_chunks = self._merge_sentences(sentences, similarities)
+
+            # TODO: add doc_id from Document class, do not calculate it here
+            doc_id = compute_mdhash_id(document)
+            for i, text in enumerate(merged_chunks):
+                all_chunks.append(
+                    Chunk(content=text, chunk_order_idx=i, doc_id=doc_id)
+                )
+
+        return all_chunks
 
 
 class SmartSemanticChunker(BaseChunker):
+    """
+    A smart semantic chunker using a reranker-based algorithm
+    (e.g., BAAI/bge-reranker-v2-m3) for improved coherence.
+    """
+
     def __init__(
-            self,
-            reranker_name='BAAI/bge-reranker-v2-m3',
-            newline_as_separator=False,
-            device='cuda:0',
-            max_chunk_length=250,
-            minibatch_size=8,
-            verbose=False
-    ):
+        self,
+        reranker_name: str = "BAAI/bge-reranker-v2-m3",
+        newline_as_separator: bool = False,
+        device: str = "cuda:0",
+        max_chunk_length: int = 250,
+        minibatch_size: int = 8,
+        verbose: bool = False,
+    ) -> None:
+        """
+        Initializes the smart semantic chunker.
+
+        :param reranker_name: Model name used for semantic reranking.
+        :param newline_as_separator: Whether to split text by newlines.
+        :param device: Device for computation.
+        :param max_chunk_length: Maximum number of tokens per chunk.
+        :param minibatch_size: Batch size for embedding computation.
+        :param verbose: Whether to display detailed progress logs.
+        """
         super().__init__()
         try:
             from ragu.chunker.smart_chunker import SmartChunker
         except ImportError:
             raise ImportError(
-                "The 'smart_chunker' package is required for the smart semantic chunker. "
-                "Please install it with 'pip install smart_chunker'."
+                "The 'smart_chunker' module is required. "
+                "Install it with: pip install smart_chunker"
             )
 
         self.chunker = SmartChunker(
@@ -197,15 +216,27 @@ class SmartSemanticChunker(BaseChunker):
             device=device,
             max_chunk_length=max_chunk_length,
             minibatch_size=minibatch_size,
-            verbose=verbose
+            verbose=verbose,
         )
 
     def split(self, documents: str | List[str]) -> List[Chunk]:
+        """
+        Splits documents using the SmartChunker model.
+
+        :param documents: A single document or a list of documents.
+        :return: List of `Chunk` objects with per-document indexing.
+        """
         if isinstance(documents, str):
             documents = [documents]
 
-        chunks: list[str] = []
-        for document in tqdm(documents, desc="Index creation: splitting documents"):
-            chunks.extend(self.chunker.split_into_chunks(source_text=document))
+        all_chunks: list[Chunk] = []
 
-        return [Chunk(content=text, chunk_order_idx=0, doc_id="") for text in chunks]
+        for doc_idx, document in enumerate(tqdm(documents, desc="Splitting documents")):
+            # TODO: add doc_id from Document class, do not calculate it here
+            doc_id = compute_mdhash_id(document)
+            parts = self.chunker.split_into_chunks(source_text=document)
+
+            for i, text in enumerate(parts):
+                all_chunks.append(Chunk(content=text, chunk_order_idx=i, doc_id=doc_id))
+
+        return all_chunks
