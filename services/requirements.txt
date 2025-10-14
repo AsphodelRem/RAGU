@@ -1,0 +1,5 @@
+flask
+ctransformers
+python-dotenv
+transformers
+torch
