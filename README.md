@@ -230,12 +230,12 @@ search_engine.update_prompt("prompt_name", PromptTemplate(template=..., schema=.
 
 ### Contributors
 #### **Main Idea & Inspiration**
-Ivan Bondarenko - idea, smart_chunker, NER model, ragu-lm
+- Ivan Bondarenko - idea, smart_chunker, NER model, ragu-lm
 
 
 #### **Core Development**
 
-Mikhail Komarov
+- Mikhail Komarov
 
 #### **Benchmarks & Evaluation**  
 - Roman Shuvalov
