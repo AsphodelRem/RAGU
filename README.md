@@ -18,6 +18,8 @@ This project provides a pipeline for building a **Knowledge Graph**, indexing it
 
 Partially based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag/tree/main)
 
+Our huggingface community is [here](https://huggingface.co/RaguTeam/)
+
 ---
 
 ## Install
@@ -174,7 +176,7 @@ Each text in corpus is processed to extract structured information. It consist o
 File: ragu/triplet/llm_artifact_extractor.py.
 A baseline pipeline that uses LLM to extract entities, relations, and their descriptions in a single step.
 
-#### 2. RAGU-lm (for russian language)
+#### 2. [RAGU-lm](https://huggingface.co/RaguTeam/RAGU-lm) (for russian language)
 A compact model (Qwen-3-0.6B) fine-tuned on the NEREL dataset.
 The pipeline operates in several stages:
 1. Extract unnormalized entities from text.
