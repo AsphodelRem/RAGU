@@ -61,7 +61,7 @@ Generate a detailed community report using entities, their relationships, and an
 
 Input text:
 {% for entity in community.entities -%}
-Entity: {{ entity,entity_name }}, description: {{ entity.description }}{% if not loop.last %}, {% endif %}
+Entity: {{ entity.entity_name }}, description: {{ entity.description }}{% if not loop.last %}, {% endif %}
 {% endfor %}
 
 Relations
@@ -138,4 +138,14 @@ Context: {{ context }}
 
 Provide the answer in the following language: {{ language }}
 Return the result as valid JSON matching the provided schema.
+"""
+
+
+DEFAULT_CLUSTER_SUMMARIZER_PROMPT = """
+**Goal**
+You are given a list of descriptions.  
+Summarize them into a single concise description.  
+
+Texts to summarize:  
+{{ content }}
 """
