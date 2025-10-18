@@ -1,6 +1,14 @@
 import httpx
 from typing import Any, Dict, List
 
+from ragu.llm.openai_client import OpenAIClient
+
+
+# Prompts from ragu-lm-examples/build_custom_knowledge_graph.ipynb
+SYSTEM_PROMPT = 'Вы - эксперт в области анализа текстов и извлечения семантической информации из них.'
+PROMPT_FOR_ENTITY_NORMALIZATION = 'Выполните нормализацию именованной сущности, встретившейся в тексте.\n\nИсходная (ненормализованная) именованная сущность: {source_entity}\n\nТекст: {source_text}\n\nНормализованная именованная сущность: '
+PROMPT_FOR_RELATION_DESCRIPTION = 'Напишите, что означает именованная сущность в тексте, то есть раскройте её смысл относительно текста.\n\nИменованная сущность: {normalized_entity}\n\nТекст: {source_text}\n\nСмысл именованной сущности: '
+
 
 class BaseClient:
     """
@@ -27,14 +35,30 @@ class NERClient(BaseClient):
         return response.get("entities", [])
 
 
-class NENClient(BaseClient):
+class NENClient:
     """
     Client for the Named Entity Normalization service.
     """
 
-    async def normalize_entities(self, entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        response = await self.post("/nen", data={"entities": entities})
-        return response.get("normalized_entities", [])
+    def __init__(self, client: OpenAIClient):
+        self.client = client
+
+    async def normalize_entities(self, entities: List[Dict[str, Any]], source_text: str) -> List[Dict[str, Any]]:
+        
+        normalized_entities = []
+        for entity in entities:
+            prompt = PROMPT_FOR_ENTITY_NORMALIZATION.format(source_entity=entity['name'], source_text=source_text)
+            responses = await self.client.generate(prompt=prompt, system_prompt=SYSTEM_PROMPT)
+            
+            normalized_name = responses[0].strip() if responses and responses[0] else entity['name']
+            normalized_entities.append({
+                "name": entity["name"],
+                "type": entity["type"],
+                "start": entity["start"],
+                "end": entity["end"],
+                "normalized_name": normalized_name,
+            })
+        return normalized_entities
 
 
 class REClient(BaseClient):
@@ -47,11 +71,25 @@ class REClient(BaseClient):
         return response.get("relations", [])
 
 
-class DescriptionClient(BaseClient):
+class DescriptionClient:
     """
     Client for the Description Generation service.
     """
 
-    async def generate_descriptions(self, relations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        response = await self.post("/describe", data={"relations": relations})
-        return response.get("triplets", [])
+    def __init__(self, client: OpenAIClient):
+        self.client = client
+
+    async def generate_descriptions(self, relations: List[Dict[str, Any]], source_text: str) -> List[Dict[str, Any]]:
+        triplets = []
+        for relation in relations:
+            prompt = PROMPT_FOR_RELATION_DESCRIPTION.format(normalized_entity=relation['source'], source_text=source_text)
+            responses = await self.client.generate(prompt=prompt, system_prompt=SYSTEM_PROMPT)
+
+            description = responses[0].strip() if responses and responses[0] else ""
+            triplets.append({
+                "source": relation["source"],
+                "target": relation["target"],
+                "type": relation["type"],
+                "description": description,
+            })
+        return triplets

@@ -29,8 +29,9 @@ class NENStep(PipelineStep):
         self.client = client
 
     async def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        text = context["text"] # Get text from context
         entities = context["entities"]
-        normalized_entities = await self.client.normalize_entities([e.dict() for e in entities])
+        normalized_entities = await self.client.normalize_entities([e.dict() for e in entities], source_text=text)
         context["normalized_entities"] = [NormalizedEntity(**e) for e in normalized_entities]
         return context
 
@@ -60,7 +61,8 @@ class DescriptionStep(PipelineStep):
         self.client = client
 
     async def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        text = context["text"] # Get text from context
         relations = context["relations"]
-        triplets = await self.client.generate_descriptions([r.dict() for r in relations])
+        triplets = await self.client.generate_descriptions([r.dict() for r in relations], source_text=text)
         context["triplets"] = [Triplet(**t) for t in triplets]
         return context

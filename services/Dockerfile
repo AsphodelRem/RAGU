@@ -1,13 +1,8 @@
-FROM python:3.12-slim
+FROM python:3.12-slim-trixie
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+ADD . /app
 WORKDIR /app
+RUN uv sync --locked
 
-RUN apt-get update && apt-get install -y gcc g++
-
-COPY requirements.txt .
-
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-CMD ["python", "app.py"]
+CMD ["uv", "run", "app.py"]

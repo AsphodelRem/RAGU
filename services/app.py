@@ -1,52 +1,71 @@
 import os
-from flask import Flask, request, jsonify
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
+from fastapi import FastAPI
+from pydantic import BaseModel
+from typing import List, Dict, Any
+from vllm import LLM, SamplingParams
+import uvicorn
 
-app = Flask(__name__)
+app = FastAPI()
 
 # Load the model and tokenizer
-model_name = "Qwen/Qwen3-0.6B"
-token = os.getenv("HUGGING_FACE_HUB_TOKEN")
-tokenizer = AutoTokenizer.from_pretrained(model_name, token=token)
-model = AutoModelForCausalLM.from_pretrained(model_name, token=token)
+MODEL_DIR = "ragu-lm"
+# Note: vLLM is primarily GPU-accelerated. Running on CPU (enforce_eager=True) might be very slow.
+# Ensure your environment has the necessary vLLM CPU dependencies if not using CUDA.
+llm = LLM(model=MODEL_DIR, dtype="bfloat16", enforce_eager=True)
+sampling_params = SamplingParams(temperature=0.0, top_p=0.95, top_k=100, max_tokens=512)
 
-@app.route("/nen", methods=["POST"])
-def normalize_entities():
-    data = request.get_json()
-    entities = data.get("entities", [])
+class EntityRequest(BaseModel):
+    entities: List[Dict[str, Any]]
+    source_text: str
+
+class RelationRequest(BaseModel):
+    relations: List[Dict[str, Any]]
+    source_text: str
+
+@app.post("/nen")
+async def normalize_entities(request_data: EntityRequest):
     normalized_entities = []
-    for entity in entities:
-        prompt = f"You are an expert in named entity normalization. Normalize the following entity: '{entity['name']}'."
-        inputs = tokenizer(prompt, return_tensors="pt")
-        outputs = model.generate(**inputs, max_new_tokens=10)
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    for entity in request_data.entities:
+        prompt = f"Выполните нормализацию именованной сущности, встретившейся в тексте.\n\nИсходная (ненормализованная) именованная сущность: {entity['name']}\n\nТекст: {request_data.source_text}\n\nНормализованная именованная сущность: "
+        
+        messages = [
+            {"role": "system", "content": "Вы - эксперт в области анализа текстов и извлечения семантической информации из них."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        outputs = llm.generate(messages, sampling_params)
+        normalized_name = outputs[0].outputs[0].text.strip()
+        
         normalized_entities.append({
             "name": entity["name"],
             "type": entity["type"],
             "start": entity["start"],
             "end": entity["end"],
-            "normalized_name": response.strip(),
+            "normalized_name": normalized_name,
         })
-    return jsonify({"normalized_entities": normalized_entities})
+    return {"normalized_entities": normalized_entities}
 
-@app.route("/describe", methods=["POST"])
-def generate_descriptions():
-    data = request.get_json()
-    relations = data.get("relations", [])
+@app.post("/describe")
+async def generate_descriptions(request_data: RelationRequest):
     triplets = []
-    for relation in relations:
-        prompt = f"You are an expert in relation description. Describe the following relation: {relation['source']} -> {relation['target']} ({relation['type']})."
-        inputs = tokenizer(prompt, return_tensors="pt")
-        outputs = model.generate(**inputs, max_new_tokens=50)
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    for relation in request_data.relations:
+        prompt = f"Напишите, что означает именованная сущность в тексте, то есть раскройте её смысл относительно текста.\n\nИменованная сущность: {relation['source']}\n\nТекст: {request_data.source_text}\n\nСмысл именованной сущности: "
+        
+        messages = [
+            {"role": "system", "content": "Вы - эксперт в области анализа текстов и извлечения семантической информации из них."},
+            {"role": "user", "content": prompt}
+        ]
+
+        outputs = llm.generate(messages, sampling_params)
+        description = outputs[0].outputs[0].text.strip()
+        
         triplets.append({
             "source": relation["source"],
             "target": relation["target"],
             "type": relation["type"],
-            "description": response.strip(),
+            "description": description,
         })
-    return jsonify({"triplets": triplets})
+    return {"triplets": triplets}
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -3,6 +3,7 @@ import os
 import time
 from dotenv import load_dotenv
 
+from ragu.llm.openai_client import OpenAIClient
 from ragu.triplet.pipeline import (
     Pipeline,
     NERClient,
@@ -18,15 +19,28 @@ from ragu.chunker.types import Chunk
 
 load_dotenv()
 
+LLM_MODEL_NAME = "ragu-lm"
+LLM_BASE_URL = os.getenv("NEN_SERVICE_BASE_URL") # vLLM server
+LLM_API_KEY = "EMPTY"
+
 async def main():
     # Wait for the services to start
     time.sleep(60)
 
+    # Create OpenAI client for vLLM
+    llm_client = OpenAIClient(
+        model_name=LLM_MODEL_NAME,
+        base_url=LLM_BASE_URL,
+        api_token=LLM_API_KEY,
+        max_requests_per_second=20, # Set some reasonable limits
+        max_requests_per_minute=400,
+    )
+
     # Create clients for each service
-    ner_client = NERClient(os.getenv("NER_SERVICE_BASE_URL"))
-    nen_client = NENClient(os.getenv("NEN_SERVICE_BASE_URL"))
+    ner_client = NERClient(os.getenv("NER_SERVICE_BASE_URL", "http://localhost:8010"))
+    nen_client = NENClient(llm_client)
     re_client = REClient(os.getenv("RE_SERVICE_BASE_URL"))
-    description_client = DescriptionClient(os.getenv("DESCRIPTION_SERVICE_BASE_URL"))
+    description_client = DescriptionClient(llm_client)
 
     # Create the pipeline steps
     steps = [
