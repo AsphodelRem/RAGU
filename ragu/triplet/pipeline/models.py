@@ -15,9 +15,9 @@ class NormalizedEntity(Entity):
 
 
 class Relation(BaseModel):
-    source: str = Field(..., description="The source entity of the relation.")
-    target: str = Field(..., description="The target entity of the relation.")
-    type: str = Field(..., description="The type of the relation.")
+    source_entity: str = Field(..., description="The source entity of the relation.")
+    target_entity: str = Field(..., description="The target entity of the relation.")
+    relationship_type: str = Field(..., description="The type of the relation.")
 
 
 class Triplet(Relation):

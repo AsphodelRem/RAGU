@@ -18,10 +18,15 @@ class BaseClient:
     def __init__(self, base_url: str):
         self.base_url = base_url
 
-    async def post(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def post(self, endpoint: str, data: Any) -> Any:
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{self.base_url}{endpoint}", json=data)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                print(f"HTTP error occurred: {e}")
+                print(f"Response body: {e.response.text}")
+                raise
             return response.json()
 
 
@@ -30,35 +35,22 @@ class NERClient(BaseClient):
     Client for the Named Entity Recognition service.
     """
 
-    async def extract_entities(self, text: str) -> List[Dict[str, Any]]:
-        response = await self.post("/ner", data={"text": text})
-        return response.get("entities", [])
+    async def extract_entities(self, text: str) -> Dict[str, Any]:
+        """
+        Input: "..." (a string)
+        Output: {'TYPE': [[start, end, 'TYPE'], ...]}
+        """
+        return await self.post("/recognize", data=text)
 
 
-class NENClient:
+class NENClient(BaseClient):
     """
     Client for the Named Entity Normalization service.
     """
 
-    def __init__(self, client: OpenAIClient):
-        self.client = client
-
     async def normalize_entities(self, entities: List[Dict[str, Any]], source_text: str) -> List[Dict[str, Any]]:
-        
-        normalized_entities = []
-        for entity in entities:
-            prompt = PROMPT_FOR_ENTITY_NORMALIZATION.format(source_entity=entity['name'], source_text=source_text)
-            responses = await self.client.generate(prompt=prompt, system_prompt=SYSTEM_PROMPT)
-            
-            normalized_name = responses[0].strip() if responses and responses[0] else entity['name']
-            normalized_entities.append({
-                "name": entity["name"],
-                "type": entity["type"],
-                "start": entity["start"],
-                "end": entity["end"],
-                "normalized_name": normalized_name,
-            })
-        return normalized_entities
+        response = await self.post("/nen", data={"entities": entities, "source_text": source_text})
+        return response.get("normalized_entities", [])
 
 
 class REClient(BaseClient):
@@ -66,30 +58,16 @@ class REClient(BaseClient):
     Client for the Relation Extraction service.
     """
 
-    async def extract_relations(self, text: str, entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        response = await self.post("/re", data={"text": text, "entities": entities})
-        return response.get("relations", [])
+    async def extract_relations(self, chunks: List[str], entities_list: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        relations = await self.post("/predict", data={"chunks": chunks, "entities_list": entities_list})
+        return relations
 
 
-class DescriptionClient:
+class DescriptionClient(BaseClient):
     """
     Client for the Description Generation service.
     """
 
-    def __init__(self, client: OpenAIClient):
-        self.client = client
-
     async def generate_descriptions(self, relations: List[Dict[str, Any]], source_text: str) -> List[Dict[str, Any]]:
-        triplets = []
-        for relation in relations:
-            prompt = PROMPT_FOR_RELATION_DESCRIPTION.format(normalized_entity=relation['source'], source_text=source_text)
-            responses = await self.client.generate(prompt=prompt, system_prompt=SYSTEM_PROMPT)
-
-            description = responses[0].strip() if responses and responses[0] else ""
-            triplets.append({
-                "source": relation["source"],
-                "target": relation["target"],
-                "type": relation["type"],
-                "description": description,
-            })
-        return triplets
+        response = await self.post("/describe", data={"relations": relations, "source_text": source_text})
+        return response.get("triplets", [])

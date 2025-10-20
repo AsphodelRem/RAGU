@@ -2,7 +2,6 @@ from typing import Any, Dict, List
 
 from ragu.triplet.pipeline.base import PipelineStep
 from ragu.triplet.pipeline.clients import (DescriptionClient, NERClient, NENClient, REClient)
-from ragu.triplet.pipeline.models import (Entity, NormalizedEntity, Relation, Triplet)
 
 
 class NERStep(PipelineStep):
@@ -15,8 +14,21 @@ class NERStep(PipelineStep):
 
     async def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         text = context["text"]
-        entities = await self.client.extract_entities(text)
-        context["entities"] = [Entity(**e) for e in entities]
+        raw_entities_dict = await self.client.extract_entities(text)
+        
+        processed_entities = []
+        if raw_entities_dict and isinstance(raw_entities_dict, dict):
+            for entity_type, entities in raw_entities_dict.items():
+                if isinstance(entities, list):
+                    for entity_data in entities:
+                        start, end, _ = entity_data
+                        processed_entities.append({
+                            "name": text[start:end],
+                            "type": entity_type,
+                            "start": start,
+                            "end": end,
+                        })
+        context["entities"] = processed_entities
         return context
 
 
@@ -29,10 +41,9 @@ class NENStep(PipelineStep):
         self.client = client
 
     async def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        text = context["text"] # Get text from context
         entities = context["entities"]
-        normalized_entities = await self.client.normalize_entities([e.dict() for e in entities], source_text=text)
-        context["normalized_entities"] = [NormalizedEntity(**e) for e in normalized_entities]
+        normalized_entities = await self.client.normalize_entities(entities, context["text"])
+        context["normalized_entities"] = normalized_entities
         return context
 
 
@@ -47,8 +58,8 @@ class REStep(PipelineStep):
     async def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         text = context["text"]
         entities = context["normalized_entities"]
-        relations = await self.client.extract_relations(text, [e.dict() for e in entities])
-        context["relations"] = [Relation(**r) for r in relations]
+        relations = await self.client.extract_relations(text, entities)
+        context["relations"] = relations
         return context
 
 
@@ -61,8 +72,12 @@ class DescriptionStep(PipelineStep):
         self.client = client
 
     async def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        text = context["text"] # Get text from context
         relations = context["relations"]
-        triplets = await self.client.generate_descriptions([r.dict() for r in relations], source_text=text)
-        context["triplets"] = [Triplet(**t) for t in triplets]
+        source_text = context["text"]
+        triplets = await self.client.generate_descriptions(relations, source_text)
+        context["triplets"] = triplets
         return context
+
+
+
+

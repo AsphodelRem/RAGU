@@ -17,5 +17,9 @@ services:
       context: ./services
     ports:
       - "8002:8000"
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
     env_file:
       - .env
+    shm_size: '32g'

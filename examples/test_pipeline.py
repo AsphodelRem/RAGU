@@ -24,9 +24,6 @@ LLM_BASE_URL = os.getenv("NEN_SERVICE_BASE_URL") # vLLM server
 LLM_API_KEY = "EMPTY"
 
 async def main():
-    # Wait for the services to start
-    time.sleep(60)
-
     # Create OpenAI client for vLLM
     llm_client = OpenAIClient(
         model_name=LLM_MODEL_NAME,
@@ -38,9 +35,9 @@ async def main():
 
     # Create clients for each service
     ner_client = NERClient(os.getenv("NER_SERVICE_BASE_URL", "http://localhost:8010"))
-    nen_client = NENClient(llm_client)
+    nen_client = NENClient(os.getenv("NEN_SERVICE_BASE_URL"))
     re_client = REClient(os.getenv("RE_SERVICE_BASE_URL"))
-    description_client = DescriptionClient(llm_client)
+    description_client = DescriptionClient(os.getenv("NEN_SERVICE_BASE_URL"))
 
     # Create the pipeline steps
     steps = [
