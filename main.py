@@ -16,7 +16,8 @@ from ragu.triplet.pipeline import (
     NERStep,
     NENStep,
     REStep,
-    DescriptionStep,
+    EntityDescriptionStep,
+    RelationDescriptionStep,
 )
 from ragu.search_engine import LocalSearchEngine
 from ragu.utils.ragu_utils import read_text_from_files
@@ -62,8 +63,9 @@ async def main():
     pipeline_steps = [
         NERStep(ner_client),
         NENStep(nen_client),
+        EntityDescriptionStep(description_client),
         REStep(re_client),
-        DescriptionStep(description_client),
+        RelationDescriptionStep(description_client),
     ]
     triplet_extraction_pipeline = Pipeline(pipeline_steps)
 
