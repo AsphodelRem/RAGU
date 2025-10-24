@@ -8,5 +8,6 @@ from ragu.triplet.pipeline import (
     NERStep,
     NENStep,
     REStep,
-    DescriptionStep,
+    EntityDescriptionStep,
+    RelationDescriptionStep,
 )
