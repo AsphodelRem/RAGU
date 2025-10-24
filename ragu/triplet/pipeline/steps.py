@@ -1,7 +1,10 @@
 from typing import Any, Dict, List
 
 from ragu.triplet.pipeline.base import PipelineStep
-from ragu.triplet.pipeline.clients import (DescriptionClient, NERClient, NENClient, REClient)
+from ragu.triplet.pipeline.clients import (
+    DescriptionClient, NERClient, NENClient, REClient
+)
+from ragu.triplet.pipeline.io_models import NER_IN, RE_IN
 
 
 class NERStep(PipelineStep):
@@ -14,20 +17,18 @@ class NERStep(PipelineStep):
 
     async def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         text = context["text"]
-        raw_entities_dict = await self.client.extract_entities(text)
-        
+        ner_input = NER_IN(root=text)
+        ner_output = await self.client.extract_entities(ner_input)
+
         processed_entities = []
-        if raw_entities_dict and isinstance(raw_entities_dict, dict):
-            for entity_type, entities in raw_entities_dict.items():
-                if isinstance(entities, list):
-                    for entity_data in entities:
-                        start, end, _ = entity_data
-                        processed_entities.append({
-                            "name": text[start:end],
-                            "type": entity_type,
-                            "start": start,
-                            "end": end,
-                        })
+        for entity_data in ner_output.ners:
+            start, end, entity_type = entity_data.root
+            processed_entities.append({
+                "name": text[start:end],
+                "type": entity_type,
+                "start": start,
+                "end": end,
+            })
         context["entities"] = processed_entities
         return context
 
@@ -56,28 +57,40 @@ class REStep(PipelineStep):
         self.client = client
 
     async def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        text = context["text"]
-        entities = context["normalized_entities"]
-        relations = await self.client.extract_relations(text, entities)
-        context["relations"] = relations
+        chunks = context["chunks"]
+        entities_list = context["entities_list"]
+        re_input = RE_IN(chunks=chunks, entities_list=entities_list)
+        relations = await self.client.extract_relations(re_input)
+        context["relations"] = relations.root
         return context
 
-
-class DescriptionStep(PipelineStep):
+class EntityDescriptionStep(PipelineStep):
     """
-    Description Generation step.
+    Entity Description Generation step.
     """
 
     def __init__(self, client: DescriptionClient):
         self.client = client
 
     async def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        relations = context["relations"]
+        entities = context["normalized_entities"]
         source_text = context["text"]
-        triplets = await self.client.generate_descriptions(relations, source_text)
-        context["triplets"] = triplets
+        described_entities = await self.client.generate_entity_descriptions(entities, source_text)
+        context["described_entities"] = described_entities
         return context
 
 
+class RelationDescriptionStep(PipelineStep):
+    """
+    Relation Description Generation step.
+    """
 
+    def __init__(self, client: DescriptionClient):
+        self.client = client
 
+    async def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        relations = context["relations_for_description"]
+        source_text = context["text"]
+        triplets = await self.client.generate_relation_description(relations, source_text)
+        context["triplets"] = triplets
+        return context

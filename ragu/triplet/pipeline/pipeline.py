@@ -1,13 +1,12 @@
 from typing import Any, Dict, List, Tuple, Iterable
 from tqdm import tqdm
-from dataclasses import asdict
+from collections import defaultdict
 
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
 from ragu.chunker.types import Chunk
 from ragu.graph.types import Entity, Relation
 from ragu.triplet.pipeline.base import PipelineStep
 from ragu.common.logger import logger
-from ragu.triplet.pipeline.models import Triplet
 
 
 class Pipeline(BaseArtifactExtractor):
@@ -26,118 +25,116 @@ class Pipeline(BaseArtifactExtractor):
         **kwargs
     ) -> Tuple[List[Entity], List[Relation]]:
         """
-        Runs the entire pipeline.
+        Runs the entire pipeline in a structured, multi-pass process.
         """
-        from ragu.triplet.pipeline.steps import NERStep, NENStep, REStep, DescriptionStep
+        from ragu.triplet.pipeline.steps import (
+            NERStep, NENStep, REStep, EntityDescriptionStep, RelationDescriptionStep
+        )
 
         logger.info("Starting triplet extraction pipeline.")
 
+        # 1. Get step instances from the pipeline
         ner_step = next((s for s in self.steps if isinstance(s, NERStep)), None)
         nen_step = next((s for s in self.steps if isinstance(s, NENStep)), None)
+        entity_desc_step = next((s for s in self.steps if isinstance(s, EntityDescriptionStep)), None)
         re_step = next((s for s in self.steps if isinstance(s, REStep)), None)
-        description_step = next((s for s in self.steps if isinstance(s, DescriptionStep)), None)
+        relation_desc_step = next((s for s in self.steps if isinstance(s, RelationDescriptionStep)), None)
 
-        if not all([ner_step, nen_step, re_step, description_step]):
-            raise ValueError("Missing one or more required pipeline steps (NER, NEN, RE, Description).")
+        if not all([ner_step, nen_step, entity_desc_step, re_step, relation_desc_step]):
+            raise ValueError("Missing one or more required pipeline steps.")
 
-        all_chunks_text: List[str] = []
-        all_normalized_entities_for_re: List[List[Dict[str, Any]]] = []
-        final_entities: List[Entity] = []
-        chunk_map: Dict[int, Chunk] = {}
-        chunk_to_entities_map: Dict[str, List[Entity]] = {}
-
+        # 2. Pass 1: Process entities for each chunk
         chunk_list = list(chunks)
-        for i, chunk in enumerate(tqdm(chunk_list, desc="Extracting entities from chunks")):
-            logger.info(f"Processing chunk {chunk.chunk_order_idx} from doc {chunk.doc_id}.")
+        chunk_map = {i: chunk for i, chunk in enumerate(chunk_list)}
+        all_entities_by_chunk_id: Dict[str, List[Entity]] = defaultdict(list)
+        all_normalized_entities_for_re: List[List[Dict[str, Any]]] = []
+
+        for i, chunk in enumerate(tqdm(chunk_list, desc="Pass 1/3: Processing Entities")):
             context = {"text": chunk.content}
-            chunk_map[i] = chunk
 
+            # NER -> NEN -> Entity Description
             context = await ner_step.run(context)
-            entities_for_nen = context.get("entities", [])
+            context = await nen_step.run(context)
+            context = await entity_desc_step.run(context)
 
-            current_chunk_entities = []
-            for entity_dict in entities_for_nen:
+            # Create Entity objects and store them
+            described_entities = context.get("described_entities", [])
+            for entity_data in described_entities:
                 entity = Entity(
-                    entity_name=entity_dict["name"],
-                    entity_type=entity_dict["type"],
-                    description="",
+                    entity_name=entity_data["name"],
+                    entity_type=entity_data["type"],
+                    description=entity_data.get("description", ""),
                     source_chunk_id=[chunk.id],
                 )
-                current_chunk_entities.append(entity)
+                all_entities_by_chunk_id[chunk.id].append(entity)
             
-            final_entities.extend(current_chunk_entities)
-            chunk_to_entities_map[chunk.id] = current_chunk_entities
-
-            context["entities"] = entities_for_nen
-            context = await nen_step.run(context)
-            normalized_entities = context.get("normalized_entities", [])
-            all_normalized_entities_for_re.append(normalized_entities)
-            all_chunks_text.append(chunk.content)
-
-        entities_for_re_service = []
-        for chunk_entities in all_normalized_entities_for_re:
-            entities_for_re_service.append(
-                [[e['start'], e['end'], e['type']] for e in chunk_entities]
+            # Prepare data for the RE step
+            all_normalized_entities_for_re.append(
+                [[e['start'], e['end'], e['type']] for e in described_entities]
             )
 
-        logger.info("Extracting relations for all chunks in a batch.")
-        raw_relations_dicts = await re_step.client.extract_relations(all_chunks_text, entities_for_re_service)
+        # Flatten the list of all entities
+        final_entities = [entity for entities in all_entities_by_chunk_id.values() for entity in entities]
 
-        relations_for_description: List[Relation] = []
-        relations_by_chunk: Dict[int, List[Dict[str, Any]]] = {}
+        # 3. Pass 2: Extract relations from all chunks
+        logger.info("Pass 2/3: Extracting Relations...")
+        re_context = {
+            "chunks": [c.content for c in chunk_list],
+            "entities_list": all_normalized_entities_for_re
+        }
+        re_output_context = await re_step.run(re_context)
+        raw_relations = re_output_context.get("relations", [])
 
-        for raw_rel_dict in raw_relations_dicts:
-            chunk_idx = raw_rel_dict.get("chunk_id")
-            if chunk_idx is not None and chunk_idx in chunk_map:
+        # 4. Pass 3: Process and describe relations
+        logger.info("Pass 3/3: Processing and Describing Relations...")
+        final_relations: List[Relation] = []
+        relations_for_description_by_chunk: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+
+        for raw_rel in tqdm(raw_relations, desc="Processing Relations"):
+            chunk_idx = raw_rel.chunk_id
+            if chunk_idx in chunk_map:
                 chunk = chunk_map[chunk_idx]
-                subject_name = raw_rel_dict.get("source_entity", "")
-                object_name = raw_rel_dict.get("target_entity", "")
+                subject_entity = next((e for e in all_entities_by_chunk_id.get(chunk.id, []) if e.entity_name == raw_rel.source_entity), None)
+                object_entity = next((e for e in all_entities_by_chunk_id.get(chunk.id, []) if e.entity_name == raw_rel.target_entity), None)
 
-                if subject_name and object_name:
-                    subject_entity = next(
-                        (e for e in chunk_to_entities_map.get(chunk.id, []) if e.entity_name == subject_name), None
+                if subject_entity and object_entity:
+                    relation = Relation(
+                        subject_id=subject_entity.id,
+                        object_id=object_entity.id,
+                        subject_name=subject_entity.entity_name,
+                        object_name=object_entity.entity_name,
+                        relationship_type=raw_rel.relationship_type,
+                        description="",  # Placeholder for now
+                        relation_strength=raw_rel.relationship_strength,
+                        source_chunk_id=[chunk.id]
                     )
-                    object_entity = next(
-                        (e for e in chunk_to_entities_map.get(chunk.id, []) if e.entity_name == object_name), None
-                    )
+                    final_relations.append(relation)
+                    relations_for_description_by_chunk[chunk_idx].append({
+                        "source_entity": relation.subject_name,
+                        "target_entity": relation.object_name,
+                        "relationship_type": relation.relationship_type,
+                    })
 
-                    if subject_entity and object_entity:
-                        relation = Relation(
-                            subject_name=subject_name,
-                            object_name=object_name,
-                            relationship_type=raw_rel_dict.get("relationship_type", ""),
-                            subject_id=subject_entity.id,
-                            object_id=object_entity.id,
-                            description="",
-                            relation_strength=raw_rel_dict.get("relationship_strength", 1.0),
-                            source_chunk_id=[chunk.id],
-                        )
-                        relations_for_description.append(relation)
-                        if chunk_idx not in relations_by_chunk:
-                            relations_by_chunk[chunk_idx] = []
-                        relations_by_chunk[chunk_idx].append(asdict(relation))
+        # Generate descriptions for relations chunk by chunk
+        all_described_triplets = []
+        for chunk_idx, relations_in_chunk in tqdm(relations_for_description_by_chunk.items(), desc="Describing Relations"):
+            if not relations_in_chunk:
+                continue
+            desc_context = {
+                "text": chunk_map[chunk_idx].content,
+                "relations_for_description": relations_in_chunk
+            }
+            described_context = await relation_desc_step.run(desc_context)
+            all_described_triplets.extend(described_context.get("triplets", []))
 
-        logger.info(f"Generating descriptions for {len(relations_for_description)} relations.")
-        
-        all_triplets: List[Triplet] = []
-        for chunk_idx, relations_in_chunk in relations_by_chunk.items():
-            chunk = chunk_map[chunk_idx]
-            relations_for_desc_client = []
-            for r_dict in relations_in_chunk:
-                relations_for_desc_client.append({
-                    "source_entity": r_dict["subject_name"],
-                    "target_entity": r_dict["object_name"],
-                    "relationship_type": r_dict["relationship_type"],
-                })
-            context = {"text": chunk.content, "relations": relations_for_desc_client}
-            context = await description_step.run(context)
-            all_triplets.extend([Triplet(**t) for t in context.get("triplets", [])])
-
-        for triplet in all_triplets:
-            for relation in relations_for_description:
-                if relation.subject_name == triplet.source_entity and relation.object_name == triplet.target_entity:
-                    relation.description = triplet.description
+        # Map descriptions back to the final Relation objects
+        for triplet in all_described_triplets:
+            for relation in final_relations:
+                if (relation.subject_name == triplet["source_entity"] and
+                    relation.object_name == triplet["target_entity"] and
+                    relation.relationship_type == triplet["relationship_type"]):
+                    relation.description = triplet.get("description", "")
                     break
 
-        logger.info(f"Triplet extraction pipeline complete. Total extracted: {len(final_entities)} entities, {len(relations_for_description)} relations.")
-        return final_entities, relations_for_description
+        logger.info(f"Triplet extraction pipeline complete. Total extracted: {len(final_entities)} entities, {len(final_relations)} relations.")
+        return final_entities, final_relations
