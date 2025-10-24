@@ -49,7 +49,7 @@ COPY app.py .
 ENV PATH="/app/.venv/bin:/usr/local/bin:$PATH"
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 
-EXPOSE 8000
+EXPOSE 8002
 
-# Run the application using uv
-CMD ["uv", "run", "app.py"]
+# Run the application using python
+CMD ["python", "app.py"]
