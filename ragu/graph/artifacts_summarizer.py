@@ -112,8 +112,8 @@ class ArtifactsDescriptionSummarizer(RaguGenerativeModule):
         relation_multi_desc = grouped_relations_df.loc[relation_mask]
         relation_single_desc = grouped_relations_df.loc[~relation_mask]
 
-        relation_multi_desc.drop("duplicate_count", axis=1, inplace=True)
-        relation_single_desc.drop("duplicate_count", axis=1, inplace=True)
+        relation_multi_desc = relation_multi_desc.drop("duplicate_count", axis=1)
+        relation_single_desc = relation_single_desc.drop("duplicate_count", axis=1)
 
         relations_to_summarize = []
         if len(relation_multi_desc) > 0 and self.use_llm_summarization:
