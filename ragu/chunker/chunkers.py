@@ -1,6 +1,7 @@
+import nltk
 import numpy as np
 
-from typing import List
+from typing import List, Callable
 from razdel import sentenize
 from tqdm import tqdm
 
@@ -178,14 +179,17 @@ class SemanticTextChunker(BaseChunker):
 
 class SmartSemanticChunker(BaseChunker):
     """
-    A smart semantic chunker using a reranker-based algorithm
-    (e.g., BAAI/bge-reranker-v2-m3) for improved coherence.
+    A smart semantic chunker using a reranker-based algorithm to prepare a long document for retrieval augmented generation.
+
+    For more information, see https://github.com/bond005/smart_chunker/tree/main
     """
 
     def __init__(
         self,
         reranker_name: str = "BAAI/bge-reranker-v2-m3",
         newline_as_separator: bool = False,
+        sentence_tokenizer: Callable[[str], List[str]] = nltk.sent_tokenize,
+        word_tokenizer: Callable[[str], List[str]] = nltk.wordpunct_tokenize,
         device: str = "cuda:0",
         max_chunk_length: int = 250,
         minibatch_size: int = 8,
@@ -196,6 +200,8 @@ class SmartSemanticChunker(BaseChunker):
 
         :param reranker_name: Model name used for semantic reranking.
         :param newline_as_separator: Whether to split text by newlines.
+        :param sentence_tokenizer: Function to tokenize sentences.
+        :param word_tokenizer: Function to tokenize words.
         :param device: Device for computation.
         :param max_chunk_length: Maximum number of tokens per chunk.
         :param minibatch_size: Batch size for embedding computation.
@@ -203,7 +209,7 @@ class SmartSemanticChunker(BaseChunker):
         """
         super().__init__()
         try:
-            from ragu.chunker.smart_chunker import SmartChunker
+            from smart_chunker import SmartChunker
         except ImportError:
             raise ImportError(
                 "The 'smart_chunker' module is required. "
@@ -213,6 +219,8 @@ class SmartSemanticChunker(BaseChunker):
         self.chunker = SmartChunker(
             reranker_name=reranker_name,
             newline_as_separator=newline_as_separator,
+            sentence_tokenizer=sentence_tokenizer,
+            word_tokenizer=word_tokenizer,
             device=device,
             max_chunk_length=max_chunk_length,
             minibatch_size=minibatch_size,
