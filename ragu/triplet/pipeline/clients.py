@@ -13,7 +13,7 @@ class BaseClient:
         self.base_url = base_url
 
     async def post(self, endpoint: str, data: Any) -> Any:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=1200) as client:
             response = await client.post(f"{self.base_url}{endpoint}", json=data)
             try:
                 response.raise_for_status()
