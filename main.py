@@ -25,13 +25,14 @@ from ragu.utils.ragu_utils import read_text_from_files
 load_dotenv()
 
 # Configuration for the vLLM server (custom_service)
-LLM_MODEL_NAME = "ragu-lm"
-LLM_BASE_URL = os.getenv("NEN_SERVICE_BASE_URL", "http://localhost:8002") # Default to 8002 if not set
-LLM_API_KEY = "EMPTY" # vLLM does not require an API key by default
+LLM_MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+LLM_BASE_URL = "https://router.huggingface.co/v1" # Default to 8002 if not set
+LLM_API_KEY = os.getenv("LLM_API_KEY")
 
 # Configuration for other services
 NER_SERVICE_BASE_URL = os.getenv("NER_SERVICE_BASE_URL", "http://localhost:8010")
 RE_SERVICE_BASE_URL = os.getenv("RE_SERVICE_BASE_URL", "http://localhost:8003")
+NEN_SERVICE_BASE_URL = os.getenv("NEN_SERVICE_BASE_URL", "http://localhost:8002")
 
 async def main():
     print("Starting RAGU engine test...")
@@ -56,9 +57,9 @@ async def main():
     # 3. Initialize Triplet Extraction Pipeline Clients and Steps
     print("Initializing Triplet Extraction Pipeline...")
     ner_client = NERClient(NER_SERVICE_BASE_URL)
-    nen_client = NENClient(llm_client) # Uses vLLM
+    nen_client = NENClient(NEN_SERVICE_BASE_URL) # Uses vLLM
     re_client = REClient(RE_SERVICE_BASE_URL)
-    description_client = DescriptionClient(llm_client) # Uses vLLM
+    description_client = DescriptionClient(NEN_SERVICE_BASE_URL) # Uses vLLM
 
     pipeline_steps = [
         NERStep(ner_client),
