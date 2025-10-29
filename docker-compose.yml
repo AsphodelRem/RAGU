@@ -5,19 +5,25 @@ services:
     image: mrpzzios/runne_contrastive_ner_tf:fixed
     ports:
       - "8010:8010"
+#    runtime: nvidia
+#    environment:
+#      - NVIDIA_VISIBLE_DEVICES=all
     command: -c "python3 server.py"
 
   re_service:
     image: mrpzzios/bertre:1.3
     ports:
       - "8003:8000"
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
 
   custom_service:
     build:
       context: ./services
     ports:
       - "8002:8000"
-#    runtime: nvidia
+    runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
     env_file:
