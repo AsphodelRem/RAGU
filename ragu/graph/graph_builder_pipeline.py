@@ -2,9 +2,10 @@ from typing import Any, List, Tuple
 
 from ragu.chunker import BaseChunker
 from ragu.chunker.types import Chunk
+from ragu.embedder.base_embedder import BaseEmbedder
 from ragu.graph.community_summarizer import CommunitySummarizer
 from ragu.graph.types import CommunitySummary, Community, Entity, Relation
-from ragu.graph.artifacts_summarizer import ArtifactsDescriptionSummarizer
+from ragu.graph.artifacts_summarizer import EntitySummarizer, RelationSummarizer
 from ragu.llm.base_llm import BaseLLM
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
 
@@ -72,6 +73,10 @@ class InMemoryGraphBuilder:
         client: BaseLLM,
         chunker: BaseChunker,
         artifact_extractor: BaseArtifactExtractor,
+        embedder: BaseEmbedder=None,
+        use_llm_summarization: bool = True,
+        use_clustering: bool = False,
+        cluster_only_if_more_than: int = 128,
         additional_pipeline: List[GraphBuilderModule] = None,
         language: str = "english",
     ):
@@ -80,11 +85,22 @@ class InMemoryGraphBuilder:
         self.artifact_extractor = artifact_extractor
         self.additional_pipeline = additional_pipeline
         self.language = language
+        self.embedder = embedder
+        self.use_llm_summarization = use_llm_summarization
+        self.use_clustering = use_clustering
 
-        self.artifact_summarizer = ArtifactsDescriptionSummarizer(
+        self.entity_summarizer = EntitySummarizer(
             client,
-            use_llm_summarization=True,
+            use_llm_summarization=use_llm_summarization,
+            use_clustering=use_clustering,
+            cluster_only_if_more_than=cluster_only_if_more_than,
+            embedder=embedder,
             language=language,
+        )
+        self.relation_summarizer = RelationSummarizer(
+            client,
+            use_llm_summarization=use_llm_summarization,
+            language=language
         )
         self.community_summarizer = CommunitySummarizer(self.client, language=language)
 
@@ -115,7 +131,8 @@ class InMemoryGraphBuilder:
         entities, relations = await self.artifact_extractor(chunks)
 
         # Step 3: summarize similar artifacts' descriptions
-        entities, relations = await self.artifact_summarizer.run(entities, relations)
+        entities = await self.entity_summarizer.run(entities)
+        relations = await self.relation_summarizer.run(relations)
 
         return entities, relations, chunks
 

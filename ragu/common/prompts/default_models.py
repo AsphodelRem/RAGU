@@ -126,3 +126,7 @@ class RelationDescriptionModel(BaseModel):
     subject_name: str = Field(description="Subject entity name")
     object_name: str = Field(description="Object entity name")
     description: str = Field(description="Summarized description of the relationship between the entities")
+
+
+class ClusterSummarizationModel(BaseModel):
+    content: str = Field(description="Summarized content of the cluster")

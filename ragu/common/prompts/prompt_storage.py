@@ -13,7 +13,7 @@ from ragu.common.prompts.default_models import (
     GlobalSearchContextModel,
     DefaultResponseModel,
     EntityDescriptionModel,
-    RelationDescriptionModel
+    RelationDescriptionModel, ClusterSummarizationModel
 )
 from ragu.common.prompts.default_templates import (
     DEFAULT_ARTIFACTS_EXTRACTOR_PROMPT,
@@ -23,7 +23,11 @@ from ragu.common.prompts.default_templates import (
     DEFAULT_ENTITY_SUMMARIZER_PROMPT,
     DEFAULT_RESPONSE_ONLY_PROMPT,
     DEFAULT_GLOBAL_SEARCH_CONTEXT_PROMPT,
-    DEFAULT_GLOBAL_SEARCH_PROMPT,
+    DEFAULT_GLOBAL_SEARCH_PROMPT, DEFAULT_CLUSTER_SUMMARIZER_PROMPT,
+    DEFAULT_RAGU_LM_ENTITY_EXTRACTION_PROMPT,
+    DEFAULT_RAGU_LM_ENTITY_NORMALIZATION_PROMPT,
+    DEFAULT_RAGU_LM_ENTITY_DESCRIPTION_PROMPT,
+    DEFAULT_RAGU_LM_RELATION_DESCRIPTION_PROMPT,
 )
 
 
@@ -135,5 +139,25 @@ DEFAULT_PROMPT_TEMPLATES = {
         template=DEFAULT_RESPONSE_ONLY_PROMPT,
         schema=DefaultResponseModel,
         description="Prompt for generating a local context-based search response."
+    ),
+    "cluster_summarize": PromptTemplate(
+        template=DEFAULT_CLUSTER_SUMMARIZER_PROMPT,
+        schema=ClusterSummarizationModel
+    ),
+    "ragu_lm_entity_extraction": PromptTemplate(
+        template=DEFAULT_RAGU_LM_ENTITY_EXTRACTION_PROMPT,
+        description="Instruction for RAGU-lm entity extraction stage."
+    ),
+    "ragu_lm_entity_normalization": PromptTemplate(
+        template=DEFAULT_RAGU_LM_ENTITY_NORMALIZATION_PROMPT,
+        description="Instruction for RAGU-lm entity normalization stage."
+    ),
+    "ragu_lm_entity_description": PromptTemplate(
+        template=DEFAULT_RAGU_LM_ENTITY_DESCRIPTION_PROMPT,
+        description="Instruction for RAGU-lm entity description stage."
+    ),
+    "ragu_lm_relation_description": PromptTemplate(
+        template=DEFAULT_RAGU_LM_RELATION_DESCRIPTION_PROMPT,
+        description="Instruction for RAGU-lm relation description stage."
     ),
 }

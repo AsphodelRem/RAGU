@@ -1,1 +1,2 @@
 from ragu.triplet.llm_artifact_extractor import ArtifactsExtractorLLM
+from ragu.triplet.ragu_lm_artifact_extractor import RaguLmArtifactExtractor

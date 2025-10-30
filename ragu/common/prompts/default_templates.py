@@ -61,7 +61,7 @@ Generate a detailed community report using entities, their relationships, and an
 
 Input text:
 {% for entity in community.entities -%}
-Entity: {{ entity,entity_name }}, description: {{ entity.description }}{% if not loop.last %}, {% endif %}
+Entity: {{ entity.entity_name }}, description: {{ entity.description }}{% if not loop.last %}, {% endif %}
 {% endfor %}
 
 Relations
@@ -138,4 +138,42 @@ Context: {{ context }}
 
 Provide the answer in the following language: {{ language }}
 Return the result as valid JSON matching the provided schema.
+"""
+
+
+DEFAULT_CLUSTER_SUMMARIZER_PROMPT = """
+**Goal**
+You are given a list of descriptions.  
+Summarize them into a single concise description.  
+
+Texts to summarize:  
+{{ content }}
+"""
+
+DEFAULT_RAGU_LM_ENTITY_EXTRACTION_PROMPT = """
+Распознайте все именованные сущности в тексте и выпишите их список с новой строки.
+Текст: {{ text }}
+Именованные сущности:
+"""
+
+DEFAULT_RAGU_LM_ENTITY_NORMALIZATION_PROMPT = """
+Выполните нормализацию именованной сущности, встретившейся в тексте.
+Исходная (ненормализованная) именованная сущность: {{ source_entity }}
+Текст: {{ source_text }}
+Нормализованная именованная сущность:
+"""
+
+DEFAULT_RAGU_LM_ENTITY_DESCRIPTION_PROMPT = """
+Напишите, что означает именованная сущность в тексте, то есть раскройте её смысл относительно текста.
+Именованная сущность: {{ normalized_entity }}
+Текст: {{ source_text }}
+Смысл именованной сущности:
+"""
+
+DEFAULT_RAGU_LM_RELATION_DESCRIPTION_PROMPT = """
+Напишите, что означает отношение между двумя именованными сущностями в тексте, то есть раскройте смысл этого отношения относительно текста (либо напишите прочерк, если между двумя именованными сущностями отсутствует отношение).
+Первая именованная сущность: {{ first_normalized_entity }}
+Вторая именованная сущность: {{ second_normalized_entity }}
+Текст: {{ source_text }}
+Смысл отношения между двумя именованными сущностями:
 """
