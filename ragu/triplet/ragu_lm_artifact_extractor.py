@@ -5,6 +5,7 @@ import itertools
 import re
 from typing import Iterable, List, Tuple, Dict, Any, Optional, Union
 
+import openai
 from aiolimiter import AsyncLimiter
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
@@ -35,7 +36,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         request_timeout: int = 60,
     ) -> None:
         """
-        Artifact extractor powered by RAGU-LM. Aims to russian language.
+        Artifact extractor powered by RAGU-LM. Supports only Russian language.
 
         The full pipeline:
         1. Extract unnormalized entities from raw text.
@@ -89,6 +90,22 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         *args: Any,
         **kwargs: Any,
     ) -> Tuple[List[Entity], List[Relation]]:
+        """
+        Run the full knowledge extraction pipeline via RAGU-LM. Aims to Russian language.
+
+        Perform the following steps:
+        - Extract unnormalized entities from raw text.
+        - Normalize entities.
+        - Generate descriptions for normalized entities.
+        - Extract relations between extracted entities within each chunk.
+
+        :param chunks: Text chunks to process.
+
+        :return: Tuple of lists of `Entity` and `Relation` objects - extracted entities and relations.
+        """
+
+        await self._check_connection()
+
         # Extract unnormalized entities from raw text.
         raw = await self.extract_artifacts(chunks)
 
@@ -126,6 +143,12 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
             return (resp.choices[0].message.content or "").strip()
         except Exception:
             return ""
+
+    async def _check_connection(self) -> bool:
+        try:
+            _ = await self.client.get(self.base_url, cast_to=str)
+        except openai.APIConnectionError:
+            raise ConnectionError("It looks like the vllm with RAGU-LM is not running. Run it via 'vllm serve'. See docs for more details.")
 
     async def _run_with_progress(self, prompts: List[str]) -> List[Any]:
         if not prompts:
@@ -350,8 +373,8 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
 
         COMBINED_NEG_RU = (
             r"(?:"
-            r"^\s*$"  # пустая строка
-            r"|^\s*[\-–—]\s*$"  # только дефис/тире
+            r"^\s*$" 
+            r"|^\s*[\-–—]\s*$"  
             r"|^(?:[-•]\s*)?(?:отсутств\w*\s+(?:связ\w*|отнош\w*)|"
             r"нет\s+(?:связ\w*|отнош\w*|информац\w*|данн\w*|сведен\w*))\b"
             r"|\\bтекст\\s+не\\s+содерж\\w*\\b"
