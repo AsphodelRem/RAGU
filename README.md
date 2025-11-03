@@ -14,7 +14,7 @@
 
 
 ## Overview
-This project provides a pipeline for building a **Knowledge Graph**, indexing it, and performing search over the indexed data. It leverages **LLM-based triplet extraction**, **semantic chunking**, and **embedding-based indexing** to enable efficient question-answering over structured knowledge.
+RAGU provides a pipeline for building a **Knowledge Graph**, and performing retrieve over the indexed data. It contains different approaches to extract structured data from raw texts to enable efficient question-answering over structured knowledge.
 
 Partially based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag/tree/main)
 
