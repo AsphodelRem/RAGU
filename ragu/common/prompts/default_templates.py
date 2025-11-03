@@ -140,7 +140,6 @@ Provide the answer in the following language: {{ language }}
 Return the result as valid JSON matching the provided schema.
 """
 
-
 DEFAULT_CLUSTER_SUMMARIZER_PROMPT = """
 **Goal**
 You are given a list of descriptions.  
