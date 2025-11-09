@@ -25,7 +25,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
     def __init__(
         self,
         ragu_lm_vllm_url: str,
-        model: str = "RaguTeam/ragu-lm",
+        model: str = "RaguTeam/RAGU-lm",
         system_prompt: str = SYSTEM_PROMPT_RU,
         temperature: float = 0.0,
         top_p: float = 0.95,
@@ -144,13 +144,15 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         except Exception:
             return ""
 
-    async def _check_connection(self) -> bool:
+    async def _check_connection(self) -> None:
         try:
-            _ = await self.client.get(self.base_url, cast_to=str)
+            _ = await self._async_call("", "")
         except openai.APIConnectionError:
             raise ConnectionError("It looks like the vllm with RAGU-LM is not running. Run it via 'vllm serve'. See docs for more details.")
+        except openai.NotFoundError:
+            raise ValueError("It looks like the model is not available. Check the model name that you pass to vllm.")
 
-    async def _run_with_progress(self, prompts: List[str]) -> List[Any]:
+    async def _run(self, prompts: List[str]) -> List[Any]:
         if not prompts:
             return []
         with tqdm_asyncio(total=len(prompts)) as pbar:
@@ -178,7 +180,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         prompt_template = self.get_prompt("ragu_lm_entity_extraction")
         prompts, _ = prompt_template.get_instruction(text=texts)
 
-        responses = await self._run_with_progress(prompts)
+        responses = await self._run(prompts)
 
         extracted: List[Dict[str, Any]] = []
         for resp, chunk in zip(responses, chunk_list):
@@ -222,7 +224,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
                 all_prompts.append(instr)
                 backrefs.append(chunk)
 
-        responses = await self._run_with_progress(all_prompts)
+        responses = await self._run(all_prompts)
 
         normalized_payloads: List[Dict[str, Any]] = []
         for resp, chunk in zip(responses, backrefs):
@@ -266,7 +268,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
                 prompts.append(instr)
                 meta.append((name, chunk))
 
-        responses = await self._run_with_progress(prompts)
+        responses = await self._run(prompts)
 
         described: List[Entity] = []
         for resp, (name, chunk) in zip(responses, meta):
@@ -318,29 +320,29 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
             if len(valid) < 2:
                 continue
 
-            for subject, object in itertools.permutations(valid, 2):
+            for subject_entity, object_entity in itertools.permutations(valid, 2):
                 instructions, _ = rel_template.get_instruction(
-                    first_normalized_entity=subject.entity_name,
-                    second_normalized_entity=object.entity_name,
+                    first_normalized_entity=subject_entity.entity_name,
+                    second_normalized_entity=object_entity.entity_name,
                     source_text=chunk.content,
                 )
                 for instruction in instructions:
                     prompts.append(instruction)
-                    meta.append((subject, object, chunk))
+                    meta.append((subject_entity, object_entity, chunk))
 
 
-        responses = await self._run_with_progress(prompts)
+        responses = await self._run(prompts)
 
         relations: List[Relation] = []
-        for resp, (subject, object, chunk) in zip(responses, meta):
+        for resp, (subject_entity, object_entity, chunk) in zip(responses, meta):
             if not self._ok(resp):
                 continue
             description = self._content(resp)
             relations.append(Relation(
-                subject_id=subject.id,
-                object_id=object.id,
-                subject_name=subject.entity_name,
-                object_name=object.entity_name,
+                subject_id=subject_entity.id,
+                object_id=object_entity.id,
+                subject_name=subject_entity.entity_name,
+                object_name=object_entity.entity_name,
                 description=description,
                 source_chunk_id=[chunk.id],
             ))
