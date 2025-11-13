@@ -82,6 +82,7 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
             self.knowledge_graph.index.community_summary_kv_storage.get_by_id(community_cluster_id)
             for community_cluster_id in community_ids
         ])
+        communities = list(filter(lambda x: x is not None, communities))
 
         responses = await self.get_meta_responses(query, communities)
 
