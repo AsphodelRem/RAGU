@@ -728,6 +728,63 @@ wheels = [
 ]
 
 [[package]]
+name = "graph-ragu"
+version = "1.0.2"
+source = { editable = "." }
+dependencies = [
+    { name = "aiolimiter" },
+    { name = "graspologic" },
+    { name = "instructor" },
+    { name = "loguru" },
+    { name = "nano-vectordb" },
+    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "networkx", version = "3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "nltk" },
+    { name = "numpy" },
+    { name = "openai" },
+    { name = "pandas" },
+    { name = "pandas-stubs" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pytest" },
+    { name = "razdel" },
+    { name = "tenacity" },
+    { name = "tiktoken" },
+    { name = "tqdm" },
+]
+
+[package.optional-dependencies]
+local = [
+    { name = "sentence-transformers" },
+    { name = "transformers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiolimiter", specifier = ">=1.2.1" },
+    { name = "graspologic", specifier = ">=3.4.4" },
+    { name = "instructor", specifier = ">=1.11.3" },
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "nano-vectordb", specifier = ">=0.0.4.3" },
+    { name = "networkx", specifier = ">=3.4.2" },
+    { name = "nltk", specifier = ">=3.9.2" },
+    { name = "numpy", specifier = ">=1.26.4" },
+    { name = "openai", specifier = ">=1.109.1" },
+    { name = "pandas", specifier = ">=2.3.3" },
+    { name = "pandas-stubs", specifier = "==2.3.2.250926" },
+    { name = "pydantic", specifier = ">=2.11.10" },
+    { name = "pydantic-settings", specifier = ">=2.11.0" },
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "razdel", specifier = ">=0.5.0" },
+    { name = "sentence-transformers", marker = "extra == 'local'", specifier = ">=5.1.1" },
+    { name = "tenacity", specifier = ">=9.1.2" },
+    { name = "tiktoken", specifier = ">=0.11.0" },
+    { name = "tqdm", specifier = ">=4.67.1" },
+    { name = "transformers", marker = "extra == 'local'", specifier = ">=4.57.0" },
+]
+provides-extras = ["local"]
+
+[[package]]
 name = "graspologic"
 version = "3.4.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1504,6 +1561,21 @@ resolution-markers = [
 sdist = { url = "https://files.pythonhosted.org/packages/6c/4f/ccdb8ad3a38e583f214547fd2f7ff1fc160c43a75af88e6aec213404b96a/networkx-3.5.tar.gz", hash = "sha256:d4c6f9cf81f52d69230866796b82afbccdec3db7ae4fbd1b65ea750feed50037", size = 2471065 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/eb/8d/776adee7bbf76365fdd7f2552710282c79a4ead5d2a46408c9043a2b70ba/networkx-3.5-py3-none-any.whl", hash = "sha256:0030d386a9a06dee3565298b4a734b68589749a544acbb6c412dc9e2489ec6ec", size = 2034406 },
+]
+
+[[package]]
+name = "nltk"
+version = "3.9.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "joblib" },
+    { name = "regex" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f9/76/3a5e4312c19a028770f86fd7c058cf9f4ec4321c6cf7526bab998a5b683c/nltk-3.9.2.tar.gz", hash = "sha256:0f409e9b069ca4177c1903c3e843eef90c7e92992fa4931ae607da6de49e1419", size = 2887629 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/90/81ac364ef94209c100e12579629dc92bf7a709a84af32f8c551b02c07e94/nltk-3.9.2-py3-none-any.whl", hash = "sha256:1e209d2b3009110635ed9709a67a1a3e33a10f799490fa71cf4bec218c11c88a", size = 1513404 },
 ]
 
 [[package]]
@@ -2338,61 +2410,6 @@ wheels = [
 ]
 
 [[package]]
-name = "ragu"
-version = "1.0.0"
-source = { editable = "." }
-dependencies = [
-    { name = "aiolimiter" },
-    { name = "graspologic" },
-    { name = "instructor" },
-    { name = "loguru" },
-    { name = "nano-vectordb" },
-    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "networkx", version = "3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "numpy" },
-    { name = "openai" },
-    { name = "pandas" },
-    { name = "pandas-stubs" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pytest" },
-    { name = "razdel" },
-    { name = "tenacity" },
-    { name = "tiktoken" },
-    { name = "tqdm" },
-]
-
-[package.optional-dependencies]
-local = [
-    { name = "sentence-transformers" },
-    { name = "transformers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiolimiter", specifier = ">=1.2.1" },
-    { name = "graspologic", specifier = ">=3.4.4" },
-    { name = "instructor", specifier = ">=1.11.3" },
-    { name = "loguru", specifier = ">=0.7.3" },
-    { name = "nano-vectordb", specifier = ">=0.0.4.3" },
-    { name = "networkx", specifier = ">=3.4.2" },
-    { name = "numpy", specifier = ">=1.26.4" },
-    { name = "openai", specifier = ">=1.109.1" },
-    { name = "pandas", specifier = ">=2.3.3" },
-    { name = "pandas-stubs", specifier = "==2.3.2.250926" },
-    { name = "pydantic", specifier = ">=2.11.10" },
-    { name = "pydantic-settings", specifier = ">=2.11.0" },
-    { name = "pytest", specifier = ">=8.4.2" },
-    { name = "razdel", specifier = ">=0.5.0" },
-    { name = "sentence-transformers", marker = "extra == 'local'", specifier = ">=5.1.1" },
-    { name = "tenacity", specifier = ">=9.1.2" },
-    { name = "tiktoken", specifier = ">=0.11.0" },
-    { name = "tqdm", specifier = ">=4.67.1" },
-    { name = "transformers", marker = "extra == 'local'", specifier = ">=4.57.0" },
-]
-provides-extras = ["local"]
-
-[[package]]
 name = "razdel"
 version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2749,6 +2766,12 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/48/973da1ee8bc0743519759e74c3615b39acdc3faf00e0a0710f8c856d8c9d/statsmodels-0.14.5-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5a085d47c8ef5387279a991633883d0e700de2b0acc812d7032d165888627bef", size = 10453538 },
     { url = "https://files.pythonhosted.org/packages/c7/d6/18903fb707afd31cf1edaec5201964dbdacb2bfae9a22558274647a7c88f/statsmodels-0.14.5-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:9f866b2ebb2904b47c342d00def83c526ef2eb1df6a9a3c94ba5fe63d0005aec", size = 10681584 },
     { url = "https://files.pythonhosted.org/packages/44/d6/80df1bbbfcdc50bff4152f43274420fa9856d56e234d160d6206eb1f5827/statsmodels-0.14.5-cp313-cp313-win_amd64.whl", hash = "sha256:2a06bca03b7a492f88c8106103ab75f1a5ced25de90103a89f3a287518017939", size = 9604641 },
+    { url = "https://files.pythonhosted.org/packages/fd/6c/0fb40a89d715412160097c6f3387049ed88c9bd866c8838a8852c705ae2f/statsmodels-0.14.5-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:07c4dad25bbb15864a31b4917a820f6d104bdc24e5ddadcda59027390c3bed9e", size = 10211256 },
+    { url = "https://files.pythonhosted.org/packages/88/4a/e36fe8b19270ab3e80df357da924c6c029cab0fb9a0fbd28aaf49341707d/statsmodels-0.14.5-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:babb067c852e966c2c933b79dbb5d0240919d861941a2ef6c0e13321c255528d", size = 10110933 },
+    { url = "https://files.pythonhosted.org/packages/8a/bf/1b7e7b1a6c09a88a9c5c9e60622c050dfd08af11c2e6d4a42dbc71b32ee1/statsmodels-0.14.5-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:110194b137286173cc676d7bad0119a197778de6478fc6cbdc3b33571165ac1e", size = 10253981 },
+    { url = "https://files.pythonhosted.org/packages/b8/d0/f95da95524bdd99613923ca61a3036d1308cee1290e5e8acb89f51736a8c/statsmodels-0.14.5-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9c8a9c384a60c80731b278e7fd18764364c8817f4995b13a175d636f967823d1", size = 10460450 },
+    { url = "https://files.pythonhosted.org/packages/28/bb/59e7be0271be264b7b541baf3973f97747740950bfd5115de731f63da8ab/statsmodels-0.14.5-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:557df3a870a57248df744fdfcc444ecbc5bdbf1c042b8a8b5d8e3e797830dc2a", size = 10694060 },
+    { url = "https://files.pythonhosted.org/packages/8b/c0/b28d0fd0347ea38d3610052f479e4b922eb33bb8790817f93cd89e6e08ba/statsmodels-0.14.5-cp314-cp314-win_amd64.whl", hash = "sha256:95af7a9c4689d514f4341478b891f867766f3da297f514b8c4adf08f4fa61d03", size = 9648961 },
 ]
 
 [[package]]
