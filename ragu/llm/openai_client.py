@@ -36,8 +36,8 @@ class OpenAIClient(BaseLLM):
         concurrency: int = 8,
         request_timeout: float = 60.0,
         instructor_mode: instructor.Mode = instructor.Mode.JSON,
-        max_requests_per_minute: Optional[int] = None,
-        max_requests_per_second: Optional[int] = None,
+        max_requests_per_minute: int = 60,
+        max_requests_per_second: int = 1,
         **openai_kwargs: Any,
     ):
         """
@@ -57,8 +57,8 @@ class OpenAIClient(BaseLLM):
 
         self.model_name = model_name
         self._sem = asyncio.Semaphore(max(1, concurrency))
-        self._rpm = AsyncLimiter(max_requests_per_minute, time_period=60) if max_requests_per_minute else None
-        self._rps = AsyncLimiter(max_requests_per_second, time_period=1) if max_requests_per_second else None
+        self._rpm = AsyncLimiter(max_requests_per_minute, time_period=60)
+        self._rps = AsyncLimiter(max_requests_per_second, time_period=1)
 
         base_client = AsyncOpenAI(
             base_url=base_url,
