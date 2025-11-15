@@ -1,3 +1,6 @@
+import asyncio
+from typing import Generator, Iterable, Sized, Any
+
 from ragu.embedder.base_embedder import BaseEmbedder
 
 
@@ -32,3 +35,29 @@ class STEmbedder(BaseEmbedder):
         if isinstance(texts, str):
             texts = [texts]
         return self.model.encode(texts, show_progress_bar=False)
+
+    async def batch_embed(self, texts: list[str], batch_size: int):
+        """
+        Generates batches from texts
+        Computes embeddings for batches.
+
+        :param texts: Input texts to embed.
+        :param batch_size: Batch size.
+        :return: list of embeddings for the batches of texts.
+        """
+        if isinstance(texts, str):
+            texts = [texts]
+
+        batches = self._get_batches(texts, batch_size)
+        tasks = [self.embed(batch) for batch in batches]
+        return await asyncio.gather(*tasks)
+
+    @staticmethod
+    def _get_batches(data: Iterable[Any] | Sized, batch_size: int) -> Generator:
+        """
+        Generates batches from the data.
+
+        :return: A generator that yields batches of data.
+        """
+        for i in range(0, len(data), batch_size):
+            yield data[i : i + batch_size]

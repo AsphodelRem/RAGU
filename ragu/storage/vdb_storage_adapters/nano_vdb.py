@@ -6,7 +6,6 @@ from typing import Any, Dict, List
 import numpy as np
 from nano_vectordb import NanoVectorDB
 
-from ragu.common.batch_generator import BatchGenerator
 from ragu.embedder.base_embedder import BaseEmbedder
 from ragu.common.global_parameters import Settings
 from ragu.storage.base_storage import BaseVectorStorage
@@ -74,8 +73,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         contents = [value["content"] for value in data.values()]
 
-        batch_generator = BatchGenerator(contents, batch_size=self.batch_size)
-        embeddings_list = [await self.embedder(batch) for batch in batch_generator.get_batches()]
+        embeddings_list = await self.embedder.batch_embed(contents)
         embeddings = np.concatenate(embeddings_list)
 
         for item, embedding in zip(list_data, embeddings):
