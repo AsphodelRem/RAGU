@@ -45,8 +45,8 @@ class KnowledgeGraph:
         await self.index.insert_chunks(chunks)
         if self.make_community_summary:
             communities, summaries = await self.high_level_build()
-            await self.index.insert_communities(communities)
-            await self.index.insert_community_summaries(summaries)
+            await self.index._insert_communities(communities)
+            await self.index._insert_summaries(summaries)
 
         return self
 
