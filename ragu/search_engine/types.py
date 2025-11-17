@@ -9,6 +9,7 @@ class LocalSearchResult:
     relations: list=field(default_factory=list)
     summaries: list=field(default_factory=list)
     chunks: list=field(default_factory=list)
+    documents_id: list[str]=field(default_factory=list)
 
     _template: Template = Template(
 """
