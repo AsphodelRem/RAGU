@@ -96,6 +96,7 @@ class Relation:
     subject_name: str
     object_name: str
     description: str
+    relationship_type: str = ""
     relation_strength: int | float = 1.0
     source_chunk_id: list[str] = field(default_factory=list)
     id: str | None = None
