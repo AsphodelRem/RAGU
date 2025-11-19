@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from ragu.chunker import SimpleChunker
 from ragu.embedder import STEmbedder
 from ragu.graph import KnowledgeGraph, InMemoryGraphBuilder
-from ragu.llm import OpenAIClient
+from ragu.llm.local_client import LocalTransformerClient
 from ragu.storage import Index
 from ragu.triplet.pipeline import (
     Pipeline,
@@ -24,10 +24,8 @@ from ragu.utils.ragu_utils import read_text_from_files
 
 load_dotenv()
 
-# Configuration for the vLLM server (custom_service)
+# Configuration for the local model
 LLM_MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
-LLM_BASE_URL = "https://router.huggingface.co/v1" # Default to 8002 if not set
-LLM_API_KEY = os.getenv("LLM_API_KEY")
 
 # Configuration for other services
 NER_SERVICE_BASE_URL = os.getenv("NER_SERVICE_BASE_URL", "http://localhost:8010")
@@ -44,15 +42,10 @@ async def main():
         print("No documents found. Please ensure 'examples/data/ru/' contains .txt files.")
         return
 
-    # 2. Initialize LLM Client for vLLM
-    print("Initializing OpenAIClient for vLLM server...")
-    llm_client = OpenAIClient(
-        model_name=LLM_MODEL_NAME,
-        base_url=LLM_BASE_URL,
-        api_token=LLM_API_KEY,
-        max_requests_per_second=20,
-        max_requests_per_minute=400,
-    )
+    # 2. Initialize Local LLM Client
+    print(f"Initializing LocalTransformerClient with model: {LLM_MODEL_NAME}...")
+    # This will download the model from Hugging Face hub if not cached
+    llm_client = LocalTransformerClient(model_name=LLM_MODEL_NAME, max_memory={0: '12GB'})
 
     # 3. Initialize Triplet Extraction Pipeline Clients and Steps
     print("Initializing Triplet Extraction Pipeline...")
