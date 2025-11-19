@@ -11,3 +11,4 @@ from ragu.triplet.pipeline import (
     EntityDescriptionStep,
     RelationDescriptionStep,
 )
+from ragu.triplet.ragu_lm_artifact_extractor import RaguLmArtifactExtractor

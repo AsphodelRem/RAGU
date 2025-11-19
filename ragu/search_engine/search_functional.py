@@ -68,6 +68,13 @@ async def _find_most_related_text_unit_from_entities(
     all_text_units = [t["data"] for t in chunks]
     return all_text_units
 
+async def _find_documents_id(entities: List[Entity]):
+    documents_set = set()
+    for entity in entities:
+        if hasattr(entity, 'documents_id') and entity.documents_id:
+            documents_set.update(entity.documents_id)
+    return list(documents_set)
+
 #
 # async def _find_most_related_community_from_entities(
 #         entities: List[Entity],

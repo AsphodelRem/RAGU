@@ -43,15 +43,10 @@ class KnowledgeGraph:
 
         # Save chunks
         await self.index.insert_chunks(chunks)
-        await self.index.entity_vector_db.index_done_callback()
-        await self.index.relation_vector_db.index_done_callback()
-
         if self.make_community_summary:
             communities, summaries = await self.high_level_build()
             await self.index.insert_communities(communities)
             await self.index.insert_community_summaries(summaries)
-
-        await self.index.graph_backend.index_done_callback()
 
         return self
 
