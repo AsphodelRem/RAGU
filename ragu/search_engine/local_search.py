@@ -10,6 +10,7 @@ from ragu.search_engine.search_functional import (
     _find_most_related_edges_from_entities,
     _find_most_related_text_unit_from_entities,
     _find_documents_id,
+    _find_most_related_community_from_entities
 )
 from ragu.search_engine.types import LocalSearchResult
 from ragu.utils.token_truncation import TokenTruncation
@@ -84,11 +85,14 @@ class LocalSearchEngine(BaseEngine):
         relevant_chunks = await _find_most_related_text_unit_from_entities(entities, self.knowledge_graph)
         relevant_chunks = [chunk for chunk in relevant_chunks if chunk is not None]
 
+        summaries = await _find_most_related_community_from_entities(entities, self.knowledge_graph)
+
         documents_id = await _find_documents_id(entities)
 
         return LocalSearchResult(
             entities=entities,
             relations=relations,
+            summaries=summaries,
             chunks=relevant_chunks,
             documents_id=documents_id
         )
