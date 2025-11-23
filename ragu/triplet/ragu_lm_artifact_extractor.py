@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import itertools
 import re
-from typing import Iterable, List, Tuple, Dict, Any, Optional, Union
+import time
+from typing import List, Tuple, Dict, Any, Optional, Union
 
 import openai
 from aiolimiter import AsyncLimiter
@@ -14,6 +15,7 @@ from tqdm.asyncio import tqdm_asyncio
 from ragu.chunker.types import Chunk
 from ragu.common.logger import logger
 from ragu.graph.types import Entity, Relation
+from ragu.common.cache import CachedLLMCall, CacheResult
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
 from ragu.utils.ragu_utils import AsyncRunner
 
@@ -82,11 +84,13 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
             timeout=request_timeout,
         )
 
-        self._chunk_cache: dict[str, Chunk] = {}
+        self._cached_llm_call = CachedLLMCall(
+            fn=lambda text: self._async_call(system_prompt=self.system_prompt, prompt=text),
+        )
 
     async def extract(
         self,
-        chunks: Iterable[Chunk],
+        chunks: List[Chunk],
         *args: Any,
         **kwargs: Any,
     ) -> Tuple[List[Entity], List[Relation]]:
@@ -106,19 +110,41 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
 
         await self._check_connection()
 
-        # Extract unnormalized entities from raw text.
-        raw = await self.extract_artifacts(chunks)
+        durations = []
+        result_entities, result_relations = [], []
+        for i, chunk in enumerate(chunks):
+            logger.info(f"[{i}/{len(chunks)}] Processing chunk: {chunk.id}")
+            start_time = time.time()
 
-        # Lemmatize entities.
-        normalized_payloads = await self.normalize_entities(raw)
+            # Extract unnormalized entities from raw text.
+            raw = await self.extract_artifacts(chunk)
 
-        # Extract descriptions for entities.
-        entities = await self.extract_entity_descriptions(normalized_payloads)
+            # Lemmatize entities.
+            normalized_payloads = await self.normalize_entities(raw, chunk)
 
-        # Extract relations between entities.
-        relations = await self.extract_relations(entities)
+            # Extract descriptions for entities.
+            entities = await self.extract_entity_descriptions(normalized_payloads, chunk)
 
-        return entities, relations
+            # Extract relations between entities.
+            relations = await self.extract_relations(entities, chunk)
+
+            end_time = time.time()
+            durations.append(end_time - start_time)
+
+            logger.info(f"Chunk processing time: {end_time - start_time:.2f} seconds")
+            logger.info(f"Extracted {len(entities)} entities and {len(relations)} relations from chunk {chunk.id}\n")
+
+            result_entities.extend(entities)
+            result_relations.extend(relations)
+
+        logger.info(
+            f"Extracted {len(result_entities)} entities and {len(result_relations)} relations in total from {len(chunks)} chunks"
+        )
+        logger.info(f"Total processing time: {sum(durations):.2f} seconds, "
+                    f"mean time per chunk: {sum(durations) / len(durations):.2f} seconds"
+        )
+
+        return result_entities, result_relations
 
     async def _async_call(self, system_prompt: str, prompt: str) -> ChatCompletion:
         messages = [
@@ -135,10 +161,24 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
 
     @staticmethod
     def _ok(resp: Any) -> bool:
+        if isinstance(resp, CacheResult):
+            resp = resp.response
         return (resp is not None) and (not isinstance(resp, Exception))
 
     @staticmethod
-    def _content(resp: ChatCompletion) -> str:
+    def _content(resp: Any) -> str:
+        if isinstance(resp, CacheResult):
+            resp = resp.response
+        if isinstance(resp, str):
+            return resp.strip()
+        if isinstance(resp, dict):
+            try:
+                choices = resp.get("choices", [])
+                first = choices[0] if choices else {}
+                content = first.get("message", {}).get("content", {})
+                return str(content).strip()
+            except Exception:
+                return ""
         try:
             return (resp.choices[0].message.content or "").strip()
         except Exception:
@@ -152,48 +192,75 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         except openai.NotFoundError:
             raise ValueError("It looks like the model is not available. Check the model name that you pass to vllm.")
 
-    async def _run(self, prompts: List[str]) -> List[Any]:
+    async def _run(self, prompts: List[str], description: str = "") -> List[Any]:
         if not prompts:
             return []
-        with tqdm_asyncio(total=len(prompts)) as pbar:
-            runner = AsyncRunner(self._sem, self._rps, self._rpm, pbar)
-            tasks = [
-                runner.make_request(
-                    self._async_call,
-                    system_prompt=self.system_prompt,
-                    prompt=p,
-                )
-                for p in prompts
-            ]
-            return await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def extract_artifacts(self, chunks: Iterable[Chunk]) -> List[Dict[str, Any]]:
+        with tqdm_asyncio(total=len(prompts), desc=description if description else None) as pbar:
+            runner = AsyncRunner(self._sem, self._rps, self._rpm, pbar)
+            results: List[Any] = [None] * len(prompts)
+            tasks: list[tuple[int, asyncio.Task[Any]]] = []
+            cache_hits = 0
+
+            for idx, prompt in enumerate(prompts):
+                cached = self._cached_llm_call.peek(prompt, system_prompt=self.system_prompt)
+                if cached is not None:
+                    results[idx] = cached
+                    cache_hits += 1
+                    if pbar:
+                        pbar.update(1)
+                    continue
+                task = asyncio.create_task(
+                    runner.make_request(
+                        self._cached_llm_call,
+                        prompt=prompt,
+                        system_prompt=self.system_prompt,
+                    )
+                )
+                tasks.append((idx, task))
+
+            if tasks:
+                gathered = await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
+                for (idx, _), value in zip(tasks, gathered):
+                    results[idx] = value
+
+            if cache_hits:
+                logger.info(f"Cache served {cache_hits}/{len(prompts)} responses for {description or 'LLM call'}")
+
+            return results
+
+    async def extract_artifacts(self, chunk) -> List[Dict[str, Any]]:
         """
         Extract raw entity candidates from input chunks via RAGU-LM.
 
-        :param chunks: Iterable of text chunks.
+        :param chunk: Text chunk to process.
         :returns: List of dictionaries with entity lists and chunks from which they were extracted..
         """
-        chunk_list = list(chunks)
-        texts = [c.content for c in chunk_list]
 
-        prompt_template = self.get_prompt("ragu_lm_entity_extraction")
-        prompts, _ = prompt_template.get_instruction(text=texts)
+        prompt, _ = self.get_prompt("ragu_lm_entity_extraction").get_instruction(text=chunk.content)
+        responses = await self._run(prompt, description="Extracting entities")
 
-        responses = await self._run(prompts)
-
-        extracted: List[Dict[str, Any]] = []
-        for resp, chunk in zip(responses, chunk_list):
-            if not self._ok(resp):
+        extracted = []
+        for response in responses:
+            if not self._ok(response):
                 continue
-            lines = self._content(resp).splitlines()
+            lines = self._content(response).splitlines()
 
             entities = [ln.strip() for ln in lines if ln.strip()]
-            extracted.append({"entity_list": entities, "chunk": chunk})
+            unique_entities = list(set(entities))
 
+            if len(unique_entities) != len(entities):
+                removed = [entity for entity in entities if entities.count(entity) > 1]
+                logger.info(
+                    f"Removed {len(entities) - len(unique_entities)} duplicates from entities. "
+                    f"Maybe hallucination? Removed entities: {removed}"
+                )
+            extracted.extend(unique_entities)
+
+        logger.info(f"Extracted {len(extracted)} entities")
         return extracted
 
-    async def normalize_entities(self, entities_and_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def normalize_entities(self, entities: List[Dict], chunk: Chunk) -> List[Dict[str, Any]]:
         """
         Normalize extracted entities for consistency.
 
@@ -202,80 +269,56 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
             "Петру Первому" -> "Петр Первый"
             "Искусственного интеллекта" -> "Искусственный интеллект"
 
-        :param entities_and_chunks: List of payloads with extracted entity names and their source chunks.
+        :param entities: List of raw extracted entities.
+        :param chunk: Chunk from which entities were extracted.
         :returns: List of normalized entity payloads.
         """
-        all_prompts: List[str] = []
-        backrefs: List[Chunk] = []
+        prompts, _ = self.get_prompt("ragu_lm_entity_normalization").get_instruction(
+            source_text=chunk.content,
+            source_entity=entities,
+        )
 
-        norm_template = self.get_prompt("ragu_lm_entity_normalization")
-        for payload in entities_and_chunks:
-            entity_list: List[str] = payload.get("entity_list", [])
-            chunk: Chunk = payload["chunk"]
-            if not entity_list:
+        responses = await self._run(prompts, description="Normalizing entities")
+
+        normalized_entities = []
+        for response in responses:
+            if not self._ok(response):
                 continue
-
-            instructions, _ = norm_template.get_instruction(
-                source_entity=entity_list,
-                source_text=chunk.content,
-            )
-
-            for instr in instructions:
-                all_prompts.append(instr)
-                backrefs.append(chunk)
-
-        responses = await self._run(all_prompts)
-
-        normalized_payloads: List[Dict[str, Any]] = []
-        for resp, chunk in zip(responses, backrefs):
-            if not self._ok(resp):
-                continue
-            normalized = self._content(resp)
+            normalized = self._content(response)
             if not normalized:
                 continue
-            normalized_payloads.append({
-                "normalized_entity": normalized,
-                "chunk": chunk,
-            })
+            normalized_entities.append(normalized)
 
-        return normalized_payloads
+        return normalized_entities
 
-    async def extract_entity_descriptions(self, entities: List[Dict[str, Any]]) -> List[Entity]:
+    async def extract_entity_descriptions(self, entities: List[str], chunk: Chunk) -> List[Entity]:
         """
         Generate descriptive summaries for normalized entities.
 
         :param entities: List of normalized entities and their associated chunks.
+        :param chunk: Chunk from which entities were extracted.
         :returns: List of fully described `Entity` objects.
         """
-        desc_template = self.get_prompt("ragu_lm_entity_description")
+        prompts, _ = self.get_prompt("ragu_lm_entity_description").get_instruction(
+            normalized_entity=entities,
+            source_text=chunk.content,
+        )
 
-        prompts: List[str] = []
-        meta: List[tuple[str, Chunk]] = []
-
-        for item in entities:
-            name: Optional[str] = item.get("normalized_entity")
-            chunk: Optional[Chunk] = item.get("chunk")
-            if not name or chunk is None:
-                continue
-
-            self._chunk_cache[chunk.id] = chunk
-
-            instructions, _ = desc_template.get_instruction(
-                normalized_entity=name,
-                source_text=chunk.content,
-            )
-            for instr in instructions:
-                prompts.append(instr)
-                meta.append((name, chunk))
-
-        responses = await self._run(prompts)
+        responses = await self._run(prompts, description="Generating entity descriptions")
 
         described: List[Entity] = []
-        for resp, (name, chunk) in zip(responses, meta):
-            if not self._ok(resp):
+        candidates: List[tuple[str, str, Chunk]] = []
+        for response, old_entity in zip(responses, entities):
+            if not self._ok(response):
                 continue
-            description = self._content(resp)
-            ent = Entity(
+            description = self._content(response)
+            if not description:
+                continue
+
+            candidates.append((old_entity, description, chunk))
+
+        for (name, description, chunk) in candidates:
+            entity = Entity(
                 entity_name=name,
                 entity_type="UNKNOWN",
                 description=description,
@@ -283,73 +326,56 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
                 documents_id=[chunk.doc_id] if getattr(chunk, "doc_id", None) else [],
                 clusters=[],
             )
-            described.append(ent)
+            described.append(entity)
 
         return described
 
-    async def extract_relations(self, entities: List[Entity]) -> List[Relation]:
+    async def extract_relations(self, entities: List[Entity], chunk: Chunk) -> List[Relation]:
         """
         Extract relations between extracted entities within each chunk.
 
         Generate relation description between inner product of entities.
 
         :param entities: List of `Entity` objects.
+        :param chunk: Chunk from which entities were extracted.
         :returns: List of `Relation` objects describing inter-entity links.
         """
         if not entities:
             return []
 
-        rel_template = self.get_prompt("ragu_lm_relation_description")
+        template = self.get_prompt("ragu_lm_relation_description")
 
-        by_chunk: Dict[str, List[Entity]] = {}
-        for entity in entities:
-            if not entity.source_chunk_id:
-                continue
-            by_chunk.setdefault(entity.source_chunk_id[0], []).append(entity)
+        prompts, pairs = [], []
+        entity_inner_product = list(itertools.permutations(entities, 2))
+        for subject_entity, object_entity in entity_inner_product:
+            instructions, _ = template.get_instruction(
+                first_normalized_entity=subject_entity.entity_name,
+                second_normalized_entity=object_entity.entity_name,
+                source_text=chunk.content,
+            )
+            for instruction in instructions:
+                pairs.append((subject_entity, object_entity))
+                prompts.append(instruction)
 
-        prompts: List[str] = []
-        meta: List[tuple[Entity, Entity, Chunk]] = []
+        responses = await self._run(prompts, description="Extract relations")
 
-        for chunk_id, entities in by_chunk.items():
-            chunk = self._chunk_cache.get(chunk_id)
-            if not chunk:
-                continue
-
-            valid = [entity for entity in entities if entity.entity_name]
-
-            if len(valid) < 2:
-                continue
-
-            for subject_entity, object_entity in itertools.permutations(valid, 2):
-                instructions, _ = rel_template.get_instruction(
-                    first_normalized_entity=subject_entity.entity_name,
-                    second_normalized_entity=object_entity.entity_name,
-                    source_text=chunk.content,
-                )
-                for instruction in instructions:
-                    prompts.append(instruction)
-                    meta.append((subject_entity, object_entity, chunk))
-
-
-        responses = await self._run(prompts)
-
-        relations: List[Relation] = []
-        for resp, (subject_entity, object_entity, chunk) in zip(responses, meta):
+        candidates: List[Relation] = []
+        for resp, (subject_entity, object_entity) in zip(responses, pairs):
             if not self._ok(resp):
                 continue
             description = self._content(resp)
-            relations.append(Relation(
+            relation = Relation(
                 subject_id=subject_entity.id,
                 object_id=object_entity.id,
                 subject_name=subject_entity.entity_name,
                 object_name=object_entity.entity_name,
                 description=description,
                 source_chunk_id=[chunk.id],
-            ))
+            )
+            candidates.append(relation)
 
+        relations = self.filter_relations(candidates)
         logger.info(f"Extracted {len(relations)} relations from {len(entities)} entities")
-        relations = self.filter_relations(relations)
-        logger.info(f"Number of relations after filtering: {len(relations)}")
 
         return relations
 
@@ -373,43 +399,38 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         def _clean_bullet(s: str) -> str:
             return re.sub(r"^[\-\u2022]\s*", "", (s or "").strip())
 
-        COMBINED_NEG_RU = (
-            r"(?:"
-            r"^\s*$" 
-            r"|^\s*[\-–—]\s*$"  
-            r"|^(?:[-•]\s*)?(?:отсутств\w*\s+(?:связ\w*|отнош\w*)|"
-            r"нет\s+(?:связ\w*|отнош\w*|информац\w*|данн\w*|сведен\w*))\b"
-            r"|\\bтекст\\s+не\\s+содерж\\w*\\b"
-            r"|\\b(?:текст\\s+)?не\\s+содерж\\w*\\s+информац\\w*\\s+о\\b"
-            r"|\\bнет\\s+(?:информац\\w*|сведен\\w*|данн\\w*)(?:\\s+о\\b|\\b)"
-            r"|\\bне\\s+явля\\w*\\s+\\w*отнош\\w*"
-            r"|\\bнет\\s+\\w*отнош\\w*"
-            r"|\\bотсутств\\w*\\s+\\w*отнош\\w*"
-            r"|\\bне\\s+содерж\\w*\\s+\\w*отнош\\w*"
-            r"|\\bнет\\s+явн\\w*\\s+\\w*отнош\\w*"
-            r"|\\bнет\\s+\\w*связ\\w*"
-            r"|\\bотсутств\\w*\\s+\\w*связ\\w*"
-            r"|\\bсвяз\\w*\\s+не\\s+(?:установ\\w*|прослежива\\w*|подтвержд\\w*|обнаруж\\w*)"
-            r"|\\bотнош\\w*\\s+не\\s+(?:установ\\w*|прослежива\\w*|подтвержд\\w*|обнаруж\\w*)"
-            r"|\\bне[^.\n]{0,60}(?:содерж\\w*|ука\\w*|упомина\\w*|найд\\w*|обнаруж\\w*|подтвержд\\w*|установ\\w*|прослеж\\w*)"
-            r"[^.\n]{0,80}(?:связ\\w*|отнош\\w*|информац\\w*)"
-            r")"
-            )
+        NEGATION_PATTERNS = [
+            r"^\s*$",
+            r"^\s*[\-–—]\s*$",
+            r"^(?:[-•]\s*)?(?:отсутств\w*\s+(?:связ\w*|отнош\w*)|нет\s+(?:связ\w*|отнош\w*|информац\w*|данн\w*|сведен\w*))\b",
+            r"\bтекст\s+не\s+содерж\w*\b",
+            r"\b(?:текст\s+)?не\s+содерж\w*\s+информац\w*\s+о\b",
+            r"\bнет\s+(?:информац\w*|сведен\w*|данн\w*)(?:\s+о\b|\b)",
+            r"\bне\s+явля\w*\s+\w*отнош\w*",
+            r"\bнет\s+\w*отнош\w*",
+            r"\bотсутств\w*\s+\w*отнош\w*",
+            r"\bне\s+содерж\w*\s+\w*отнош\w*",
+            r"\bнет\s+явн\w*\s+\w*отнош\w*",
+            r"\bнет\s+\w*связ\w*",
+            r"\bотсутств\w*\s+\w*связ\w*",
+            r"\bсвяз\w*\s+не\s+(?:установ\w*|прослежива\w*|подтвержд\w*|обнаруж\w*)",
+            r"\bотнош\w*\s+не\s+(?:установ\w*|прослежива\w*|подтвержд\w*|обнаруж\w*)",
+            r"\bне[^.\n]{0,60}(?:содерж\w*|ука\w*|упомина\w*|найд\w*|обнаруж\w*|подтвержд\w*|установ\w*|прослеж\w*)[^.\n]{0,80}(?:связ\w*|отнош\w*|информац\w*)",
+        ]
 
         if isinstance(negative_pattern, re.Pattern):
-            NEG = negative_pattern
+            neg = negative_pattern
         else:
-            NEG = re.compile(negative_pattern or COMBINED_NEG_RU, flags=re.IGNORECASE | re.UNICODE)
+            neg = re.compile(negative_pattern or r"(?:" + "|".join(NEGATION_PATTERNS) + r")", flags=re.IGNORECASE | re.UNICODE)
 
         kept: List[Relation] = []
         for rel in relations:
-            desc = rel.description
-            cleaned = _clean_bullet(desc)
-            if NEG.search(cleaned):
+            cleaned = _clean_bullet(rel.description)
+            if not cleaned:
+                continue
+            if neg.search(cleaned):
                 continue
             rel.description = cleaned
             kept.append(rel)
 
         return kept
-
-
