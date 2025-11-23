@@ -11,6 +11,7 @@ DEFAULT_FILENAMES = {
     "relation_vdb_name": "vdb_relation.json",
     "knowledge_graph_storage_name": "knowledge_graph.gml",
     "community_summary_kv_storage_name": "kv_community_summary.json",
+    "llm_cache_file_name": "llm_cache.jsonl",
 }
 
 
