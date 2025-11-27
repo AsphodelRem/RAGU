@@ -1,4 +1,7 @@
 from ragu.embedder.base_embedder import BaseEmbedder
+from ragu.common.batch_generator import BatchGenerator
+
+import numpy as np
 
 
 class STEmbedder(BaseEmbedder):
@@ -22,13 +25,21 @@ class STEmbedder(BaseEmbedder):
         self.model = SentenceTransformer(model_name_or_path, **kwargs)
         self.dim = self.model.get_sentence_embedding_dimension()
 
-    async def embed(self, texts: str | list[str]):
+    async def embed(self, texts: str | list[str], batch_size: int=16):
         """
         Computes embeddings for a string or a list of strings.
 
         :param texts: Input text(s) to embed.
+        :param batch_size: Batch size.
         :return: Embeddings for the input text(s).
         """
         if isinstance(texts, str):
             texts = [texts]
-        return self.model.encode(texts, show_progress_bar=False)
+
+        batch_generator = BatchGenerator(texts, batch_size=batch_size)
+        embeddings_list = [
+            await self.model.encode(batch, show_progress_bar=False)
+            for batch in batch_generator.get_batches()
+        ]
+
+        return np.concatenate(embeddings_list)
