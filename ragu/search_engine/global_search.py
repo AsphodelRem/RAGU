@@ -27,6 +27,7 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         max_context_length: int = 30_000,
         tokenizer_backend: str = "tiktoken",
         tokenizer_model: str = "gpt-4",
+        max_communities: int | None = None,
         *args,
         **kwargs
     ):
@@ -49,6 +50,7 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
             tokenizer_backend,
             max_context_length
         )
+        self.max_communities = max_communities
 
     async def a_search(self, query: str, *args, **kwargs) -> GlobalSearchResult:
         """
@@ -61,10 +63,24 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         :param query: The input natural language query.
         :return: Concatenated responses from the top-rated communities.
         """
+        community_ids = await self.knowledge_graph.index.communities_kv_storage.all_keys()
+
+        if self.max_communities is not None:
+            levels = await asyncio.gather(*[
+                (community_cluster_id,
+                 self.knowledge_graph.index.community_kv_storage.get_by_id(community_cluster_id)["level"])
+                for community_cluster_id in community_ids
+            ])
+
+            community_ids = [id for id, _ in sorted(
+                levels,
+                key=lambda x: x[1],
+            )[: self.max_communities:-1]]
+
 
         communities = await asyncio.gather(*[
             self.knowledge_graph.index.community_summary_kv_storage.get_by_id(community_cluster_id)
-            for community_cluster_id in await self.knowledge_graph.index.communities_kv_storage.all_keys()
+            for community_cluster_id in community_ids
         ])
         communities = list(filter(lambda x: x is not None, communities))
 
