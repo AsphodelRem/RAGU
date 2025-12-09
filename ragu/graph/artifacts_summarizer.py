@@ -19,8 +19,9 @@ class EntitySummarizer(RaguGenerativeModule):
             client: BaseLLM = None,
             use_llm_summarization: bool = True,
             use_clustering: bool = False,
-            embedder: BaseEmbedder=None,
+            embedder: BaseEmbedder = None,
             cluster_only_if_more_than: int = 128,
+            summarize_only_if_more_than: int = 5,
             language: str = "russian"
     ):
         _PROMPTS = ["entity_summarizer", "cluster_summarize"]
@@ -29,6 +30,7 @@ class EntitySummarizer(RaguGenerativeModule):
         self.client = client
         self.language = language
         self.use_llm_summarization = use_llm_summarization
+        self.summarize_only_if_more_than = summarize_only_if_more_than
 
         # Clustering parameters
         self.use_clustering = use_clustering
@@ -85,7 +87,7 @@ class EntitySummarizer(RaguGenerativeModule):
             maybe_clustered = await self._summarize_by_cluster_if_needed(row["description"])
             grouped_entities_df.loc[i, "description"] = maybe_clustered
 
-        entity_mask = grouped_entities_df["duplicate_count"].to_numpy() > 1
+        entity_mask = grouped_entities_df["duplicate_count"].to_numpy() > self.summarize_only_if_more_than
         logger.info(f"Found {entity_mask.sum()} duplicated entities.")
 
         entity_multi_desc = grouped_entities_df.loc[entity_mask]
@@ -95,7 +97,7 @@ class EntitySummarizer(RaguGenerativeModule):
         entity_single_desc = entity_single_desc.drop("duplicate_count", axis=1)
 
         entities_to_summarize = []
-        if len(entity_multi_desc) > 0 and self.use_llm_summarization:
+        if self.use_llm_summarization:
             entities_to_summarize = [Entity(**row) for _, row in entity_multi_desc.iterrows()]
             prompt, schema = self.get_prompt("entity_summarizer").get_instruction(
                 entity=entities_to_summarize,
@@ -106,6 +108,9 @@ class EntitySummarizer(RaguGenerativeModule):
             for i, summary in enumerate(response):
                 if summary:
                     entities_to_summarize[i].description = summary.description
+
+        else:
+            entities_to_summarize = [Entity(**row) for _, row in entity_multi_desc.iterrows()]
 
         return [Entity(**row) for _, row in entity_single_desc.iterrows()] + entities_to_summarize
 
@@ -138,7 +143,6 @@ class EntitySummarizer(RaguGenerativeModule):
             cluster = DBSCAN(eps=0.5, min_samples=2).fit(await self.embedder.embed(descriptions))
             labels = cluster.labels_
 
-
             clusters = {}
             for label, text in zip(labels, descriptions):
                 if label not in clusters:
@@ -160,7 +164,7 @@ class EntitySummarizer(RaguGenerativeModule):
 class RelationSummarizer(RaguGenerativeModule):
     """
     Summarizes and merges textual descriptions of entities and relations
-    extracte f+rom documents.
+    extracted from documents.
 
     The class groups duplicated entities and relations by their identifiers
     (e.g., ``entity_name``, ``entity_type`` for entities, and
@@ -180,6 +184,7 @@ class RelationSummarizer(RaguGenerativeModule):
             client: BaseLLM = None,
             use_llm_summarization: bool = True,
             use_clustering: bool = False,
+            summarize_only_if_more_than: int = 5,
             embedder: BaseEmbedder=None,
             language: str = "russian"
     ):
@@ -189,6 +194,7 @@ class RelationSummarizer(RaguGenerativeModule):
         self.client = client
         self.language = language
         self.use_llm_summarization = use_llm_summarization
+        self.summarize_only_if_more_than = summarize_only_if_more_than
         self.use_clustering = use_clustering
         self.embedder = embedder
 
@@ -247,8 +253,11 @@ class RelationSummarizer(RaguGenerativeModule):
         relation_multi_desc = relation_multi_desc.drop("duplicate_count", axis=1)
         relation_single_desc = relation_single_desc.drop("duplicate_count", axis=1)
 
+        if len(relation_single_desc) < 1:
+            return [Relation(**row) for _, row in relation_single_desc.iterrows()]
+
         relations_to_summarize = []
-        if len(relation_multi_desc) > 0 and self.use_llm_summarization:
+        if self.use_llm_summarization:
             relations_to_summarize = [Relation(**row) for _, row in relation_multi_desc.iterrows()]
             prompt, schema = self.get_prompt("relation_summarizer").get_instruction(
                 relation=relations_to_summarize,
@@ -259,6 +268,8 @@ class RelationSummarizer(RaguGenerativeModule):
             for i, summary in enumerate(response):
                 if summary:
                     relations_to_summarize[i].description = summary.description
+        else:
+            relations_to_summarize = [Relation(**row) for _, row in relation_multi_desc.iterrows()]
 
         return [Relation(**row) for _, row in relation_single_desc.iterrows()] + relations_to_summarize
 
