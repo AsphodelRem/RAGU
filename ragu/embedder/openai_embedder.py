@@ -38,7 +38,6 @@ class OpenAIEmbedder(BaseEmbedder):
         self._rpm = AsyncLimiter(max_requests_per_minute, time_period=60) if max_requests_per_minute else None
         self._rps = AsyncLimiter(max_requests_per_second, time_period=1) if max_requests_per_second else None
 
-
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
     async def _one_call(self, text: str) -> List[float] | None:
         try:
@@ -59,7 +58,7 @@ class OpenAIEmbedder(BaseEmbedder):
             runner = AsyncRunner(self._sem, self._rps, self._rpm, pbar)
             tasks = [runner.make_request(self._one_call, text=text) for text in texts]
 
-            return await asyncio.gather(*tasks)
+            return await asyncio.gather(*tasks, return_exceptions=True)
 
     async def aclose(self):
         try:
