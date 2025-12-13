@@ -92,10 +92,12 @@ class SemanticTextChunker(BaseChunker):
         super().__init__()
         try:
             from sentence_transformers import SentenceTransformer
-        except ImportError:
+        except ImportError as e:
+            print(e)
             raise ImportError(
                 "Please install 'sentence_transformers' for SemanticTextChunker:\n"
                 "    pip install sentence_transformers"
+                "Or install RAGU 'local' package (pip install graph_ragu[local]) "
             )
 
         self.model = SentenceTransformer(model_name).to(device)
@@ -209,11 +211,12 @@ class SmartSemanticChunker(BaseChunker):
         """
         super().__init__()
         try:
-            from smart_chunker import SmartChunker
+            from smart_chunker.chunker import SmartChunker
         except ImportError:
             raise ImportError(
                 "The 'smart_chunker' module is required. "
-                "Install it with: pip install smart_chunker"
+                "Install it with: pip install smart_chunker "
+                "Or install RAGU 'local' package (pip install graph_ragu[local]) "
             )
 
         self.chunker = SmartChunker(

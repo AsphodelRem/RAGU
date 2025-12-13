@@ -9,6 +9,7 @@ description = "GraphRAG system"
 requires-python = ">=3.10"
 dependencies = [
     "aiolimiter>=1.2.1",
+    "black>=25.12.0",
     "graspologic>=3.4.4",
     "instructor>=1.11.3",
     "loguru>=0.7.3",
@@ -32,6 +33,7 @@ dependencies = [
 local = [
     "sentence-transformers>=5.1.1",
     "transformers>=4.57.0",
+    "smart_chunker @ git+https://github.com/AsphodelRem/smart_chunker.git",
 ]
 
 [tool.setuptools.packages.find]
