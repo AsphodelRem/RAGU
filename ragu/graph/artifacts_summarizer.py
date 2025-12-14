@@ -244,7 +244,7 @@ class RelationSummarizer(RaguGenerativeModule):
                                      a ``duplicate_count`` column.
         :return: A list of summarized :class:`Relation` objects.
         """
-        relation_mask = grouped_relations_df["duplicate_count"].to_numpy() > 1
+        relation_mask = grouped_relations_df["duplicate_count"].to_numpy() > self.summarize_only_if_more_than
         logger.info(f"Found {relation_mask.sum()} duplicated relations.")
 
         relation_multi_desc = grouped_relations_df.loc[relation_mask]
@@ -253,7 +253,7 @@ class RelationSummarizer(RaguGenerativeModule):
         relation_multi_desc = relation_multi_desc.drop("duplicate_count", axis=1)
         relation_single_desc = relation_single_desc.drop("duplicate_count", axis=1)
 
-        if len(relation_single_desc) < 1:
+        if relation_multi_desc.empty:
             return [Relation(**row) for _, row in relation_single_desc.iterrows()]
 
         relations_to_summarize = []
