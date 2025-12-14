@@ -144,7 +144,7 @@ class OpenAIClient(BaseLLM):
                 ) for p in prompts
             ]
 
-            return await asyncio.gather(*tasks, return_exceptions=False)
+            return await asyncio.gather(*tasks, return_exceptions=True)
 
     async def async_close(self) -> None:
         """
