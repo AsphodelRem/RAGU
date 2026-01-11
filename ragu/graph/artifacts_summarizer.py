@@ -66,6 +66,11 @@ class EntitySummarizer(RaguGenerativeModule):
         :param entities: List of extracted entities to summarize or merge.
         :return: A tuple ``(entities, relations)`` containing updated objects.
         """
+
+        if len(entities) == 0:
+            logger.warning("Empty list of entities. Seems that something goes wrong.")
+            return []
+
         grouped_entities_df = self.group_entities(entities)
         entities_to_return = await self.summarize_entities(grouped_entities_df)
 
@@ -96,6 +101,9 @@ class EntitySummarizer(RaguGenerativeModule):
         entity_multi_desc = entity_multi_desc.drop("duplicate_count", axis=1)
         entity_single_desc = entity_single_desc.drop("duplicate_count", axis=1)
 
+        if entity_multi_desc.empty:
+            return [Entity(**row) for _, row in entity_single_desc.iterrows()]
+
         entities_to_summarize = []
         if self.use_llm_summarization:
             entities_to_summarize = [Entity(**row) for _, row in entity_multi_desc.iterrows()]
@@ -103,7 +111,11 @@ class EntitySummarizer(RaguGenerativeModule):
                 entity=entities_to_summarize,
                 language=self.language,
             )
-            response: List[EntityDescriptionModel] = await self.client.generate(prompt=prompt, schema=schema) # type: ignore
+            response: List[EntityDescriptionModel] = await self.client.generate( # type: ignore
+                prompt=prompt,
+                schema=schema,
+                progress_bar_desc="Entity summarization"
+            )
 
             for i, summary in enumerate(response):
                 if summary:
@@ -152,7 +164,11 @@ class EntitySummarizer(RaguGenerativeModule):
             result_description = []
             for cluster in clusters.values():
                 prompt, schema = self.get_prompt("cluster_summarize").get_instruction(content=cluster)
-                result = await self.client.generate(prompt=prompt, schema=schema) # type: ignore
+                result = await self.client.generate(
+                    prompt=prompt,
+                    schema=schema,
+                    progress_bar_desc="Map reduce for clustering"
+                ) # type: ignore
                 result_description.extend([r.content for r in result])
 
             return ". ".join(result_description)
@@ -188,30 +204,17 @@ class RelationSummarizer(RaguGenerativeModule):
             embedder: BaseEmbedder=None,
             language: str = "russian"
     ):
-        _PROMPTS = ["entity_summarizer", "relation_summarizer"]
+        _PROMPTS = ["relation_summarizer"]
         super().__init__(prompts=_PROMPTS)
 
         self.client = client
         self.language = language
         self.use_llm_summarization = use_llm_summarization
         self.summarize_only_if_more_than = summarize_only_if_more_than
-        self.use_clustering = use_clustering
-        self.embedder = embedder
 
         if self.use_llm_summarization and self.client is None:
             raise ValueError(
                 "LLM summarization is enabled but no client is provided. Please provide a client."
-            )
-
-        if self.use_clustering and not self.use_llm_summarization:
-            logger.warning(
-                "Clustering is enabled but LLM summarization is disabled. Clustering will be ignored."
-            )
-            self.use_clustering = False
-
-        if self.use_clustering and not self.embedder:
-            raise ValueError(
-                f"Clustering is enabled but no embedder is provided. Please provide an embedder."
             )
 
     async def run(self, relations: List[Relation], **kwargs) -> Any:
@@ -227,6 +230,10 @@ class RelationSummarizer(RaguGenerativeModule):
         :param relations: List of extracted relations to summarize or merge.
         :return: A tuple ``(entities, relations)`` containing updated objects.
         """
+        if len(relations) == 0:
+            logger.warning("No relations to summarize. Maybe something goes wrong.")
+            return []
+
         grouped_relations_df = self.group_relations(relations)
         relations_to_return = await self.summarize_relations(grouped_relations_df)
 
