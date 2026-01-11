@@ -17,6 +17,7 @@ from tenacity import (
 )
 from tqdm.asyncio import tqdm_asyncio
 
+from ragu.common.cache import TextCache, PendingRequest, make_llm_cache_key
 from ragu.common.logger import logger
 from ragu.common.decorator import no_throw
 from ragu.llm.base_llm import BaseLLM
@@ -38,6 +39,7 @@ class OpenAIClient(BaseLLM):
         instructor_mode: instructor.Mode = instructor.Mode.JSON,
         max_requests_per_minute: int = 60,
         max_requests_per_second: int = 1,
+        time_period: int | float = 1,
         **openai_kwargs: Any,
     ):
         """
@@ -58,7 +60,7 @@ class OpenAIClient(BaseLLM):
         self.model_name = model_name
         self._sem = asyncio.Semaphore(max(1, concurrency))
         self._rpm = AsyncLimiter(max_requests_per_minute, time_period=60)
-        self._rps = AsyncLimiter(max_requests_per_second, time_period=1)
+        self._rps = AsyncLimiter(max_requests_per_second, time_period=time_period)
 
         base_client = AsyncOpenAI(
             base_url=base_url,
@@ -68,6 +70,8 @@ class OpenAIClient(BaseLLM):
         )
 
         self._client = instructor.from_openai(client=base_client, mode=instructor_mode)
+
+        self.cache = TextCache()
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def _one_call(
@@ -88,6 +92,7 @@ class OpenAIClient(BaseLLM):
         :param kwargs: Additional API call parameters.
         :return: Parsed model output or raw string, or ``None`` if failed.
         """
+
         messages = [{"role": "user", "content": prompt}]
         if system_prompt:
             messages.insert(0, {"role": "system", "content": system_prompt})
@@ -106,50 +111,86 @@ class OpenAIClient(BaseLLM):
         except Exception as e:
             logger.error(f"[RemoteLLM] request failed after retries: {e}", e, exc_info=True)
             self.statistics["fail"] += 1
-            return None
+            raise
 
     @no_throw
     async def generate(
-        self,
-        prompt: str | list[str],
-        *,
-        system_prompt: Optional[str] = None,
-        model_name: Optional[str] = None,
-        progress_bar_desc: Optional[str] = "Processing",
-        **kwargs: Any,
+            self,
+            prompt: str | list[str],
+            *,
+            system_prompt: Optional[str] = None,
+            model_name: Optional[str] = None,
+            progress_bar_desc: Optional[str] = "Processing",
+            schema: Optional[type[BaseModel]] = None,
+            **kwargs: Any,
     ) -> List[Optional[Union[str, BaseModel]]]:
-        """
-        Generate one or multiple completions asynchronously.
 
-        This method automatically batches multiple prompts, runs them with
-        concurrency and rate limits, and provides a live progress bar.
-
-        :param prompt: Single prompt string or a list of prompts to process.
-        :param system_prompt: Optional system prompt applied to all items.
-        :param model_name: Optional override for model name.
-        :param progress_bar_desc: Label shown in the progress bar (default: ``"Processing"``).
-        :param kwargs: Additional keyword arguments passed to the model call.
-        :return: List of responses (strings or Pydantic models). Items may be ``None`` if failed.
-        """
         prompts: List[str] = [prompt] if isinstance(prompt, str) else list(prompt)
-        with tqdm_asyncio(total=len(prompts), desc=progress_bar_desc) as pbar:
+
+        results: list[Optional[Union[str, BaseModel]]] = [None] * len(prompts)
+        pending: list[PendingRequest] = []
+
+        for i, p in enumerate(prompts):
+            key = make_llm_cache_key(
+                prompt=p,
+                system_prompt=system_prompt,
+                model_name=model_name or self.model_name,
+                schema=schema,
+                kwargs=kwargs,
+            )
+
+            cached = await self.cache.get(key, schema=schema)
+            if cached is not None:
+                results[i] = cached
+            else:
+                pending.append(PendingRequest(i, p, key))
+
+        logger.info(f"[OpenAIClientService]: Found {len(prompts) - len(pending)}/{len(prompts)} requests in cache.")
+        if not pending:
+            return results
+
+        with tqdm_asyncio(total=len(pending), desc=progress_bar_desc) as pbar:
             runner = AsyncRunner(self._sem, self._rps, self._rpm, pbar)
+
             tasks = [
                 runner.make_request(
                     self._one_call,
-                    prompt=p,
+                    prompt=req.prompt,
                     system_prompt=system_prompt,
                     model_name=model_name,
+                    schema=schema,
                     **kwargs
-                ) for p in prompts
+                )
+                for req in pending
             ]
 
-            return await asyncio.gather(*tasks, return_exceptions=True)
+            generated = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for req, value in zip(pending, generated):
+            if not isinstance(value, Exception) and value is not None:
+                if system_prompt:
+                    input_instruction = f"[system]: {system_prompt}\n[user]: {req.prompt}"
+                else:
+                    input_instruction = req.prompt
+
+                await self.cache.set(req.cache_key, value, input_instruction=input_instruction)
+                results[req.index] = value
+            else:
+                results[req.index] = None
+
+        await self.cache.flush_cache()
+
+        return results
 
     async def async_close(self) -> None:
         """
-        Close the underlying asynchronous OpenAI client.
+        Close the underlying asynchronous OpenAI client and flush cache.
         """
+        try:
+            await self.cache.close()
+        except Exception:
+            pass
+
         try:
             await self._client.close()
         except Exception:
