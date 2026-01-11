@@ -2,6 +2,7 @@ from typing import Any, List, Tuple
 
 from ragu.chunker import BaseChunker
 from ragu.chunker.types import Chunk
+from ragu.common.global_parameters import Settings
 from ragu.embedder.base_embedder import BaseEmbedder
 from ragu.graph.community_summarizer import CommunitySummarizer
 from ragu.graph.types import CommunitySummary, Community, Entity, Relation
@@ -78,13 +79,13 @@ class InMemoryGraphBuilder:
         use_clustering: bool = False,
         cluster_only_if_more_than: int = 128,
         additional_pipeline: List[GraphBuilderModule] = None,
-        language: str = "english",
+        language: str | None = None,
     ):
         self.client = client
         self.chunker = chunker
         self.artifact_extractor = artifact_extractor
         self.additional_pipeline = additional_pipeline
-        self.language = language
+        self.language = language if language else Settings.language
         self.embedder = embedder
         self.use_llm_summarization = use_llm_summarization
         self.use_clustering = use_clustering

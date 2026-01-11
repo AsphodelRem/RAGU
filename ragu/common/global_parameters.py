@@ -12,6 +12,7 @@ DEFAULT_FILENAMES = {
     "knowledge_graph_storage_name": "knowledge_graph.gml",
     "community_summary_kv_storage_name": "kv_community_summary.json",
     "llm_cache_file_name": "llm_cache.jsonl",
+    "embedding_cache_file_name": "embedding_cache.pkl",
 }
 
 
@@ -19,6 +20,8 @@ class GlobalSettings:
     __instance = None
     _current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     _working_dir = os.path.join(os.path.join(os.getcwd(), "ragu_working_dir"), _current_time)
+
+    language: str = "english"
 
     def __new__(cls, *args, **kwargs):
         if cls.__instance is None:

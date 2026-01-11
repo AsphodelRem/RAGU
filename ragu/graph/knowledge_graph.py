@@ -1,6 +1,7 @@
 import asyncio
 from typing import List
 
+from ragu.common.logger import logger
 from ragu.graph.graph_builder_pipeline import InMemoryGraphBuilder
 from ragu.graph.types import Entity, Relation, CommunitySummary
 from ragu.storage.index import Index
@@ -16,14 +17,23 @@ class KnowledgeGraph:
             index: Index,
             make_community_summary: bool = True,
             remove_isolated_nodes: bool = True,
-            language: str = "english",
+            language: str | None = None,
     ):
         self.pipeline = extraction_pipeline
         self.index = index
         self.make_community_summary = make_community_summary
         self.remove_isolated_nodes = remove_isolated_nodes
-        self.language = language
-        self.pipeline.language = language
+
+        self.language = language if language else Settings.language
+
+        if self.language != self.pipeline.language:
+            logger.warning(
+                "Override language from %s to %s",
+                self.pipeline.language, self.language
+            )
+            for o in self.pipeline.__dict__:
+                if getattr(o, "language", None):
+                    setattr(o, "language", self.language)
 
         self._id_to_entity_map = {}
         self._id_to_relation_map = {}

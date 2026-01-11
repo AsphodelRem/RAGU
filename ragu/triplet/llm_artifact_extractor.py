@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List, Tuple, Optional, Iterable
 
 from ragu.chunker.types import Chunk
+from ragu.common.global_parameters import Settings
 from ragu.graph.types import Entity, Relation
 from ragu.llm.base_llm import BaseLLM
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
@@ -22,7 +23,7 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
         self,
         client: BaseLLM,
         do_validation: bool = False,
-        language: str = "russian",
+        language: str | None = None,
         entity_types: Optional[List[str]] = NEREL_ENTITY_TYPES,
         relation_types: Optional[List[str]] = None
     ):
@@ -40,7 +41,7 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
 
         self.client = client
         self.do_validation = do_validation
-        self.language = language
+        self.language = language if language else Settings.language
         self.entity_types = ", ".join(entity_types) if entity_types else None
         self.relation_types = ", ".join(relation_types) if relation_types else None
 
@@ -72,6 +73,7 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
         result_list = await self.client.generate(
             prompt=prompts,
             schema=schema,
+            progress_bar_desc="Extracting a knowledge graph from chunks",
         )
 
         if self.do_validation:
@@ -84,10 +86,11 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
 
             result_list = await self.client.generate(
                 prompt=prompts,
-                schema=schema
+                schema=schema,
+                progress_bar_desc="Validation of extracted artifacts",
             )
 
-        result_list = list(filter(lambda x: x is not None, result_list))
+        result_list = list(filter(lambda x: x is not None and not isinstance(x, Exception), result_list))
 
         for artifacts, chunk in zip(result_list, chunks):
             current_chunk_entities = []
