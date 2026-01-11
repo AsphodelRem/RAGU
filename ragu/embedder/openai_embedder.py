@@ -1,5 +1,5 @@
 import asyncio
-from typing import List, Union
+from typing import List, Union, Any
 
 from aiolimiter import AsyncLimiter
 from openai import AsyncOpenAI
@@ -22,6 +22,7 @@ class OpenAIEmbedder(BaseEmbedder):
             request_timeout: float = 60.0,
             max_requests_per_second: int = 1,
             max_requests_per_minute: int = 60,
+            time_period: int | float = 1,
             *args,
             **kwargs
     ):
@@ -36,7 +37,7 @@ class OpenAIEmbedder(BaseEmbedder):
 
         self._sem = asyncio.Semaphore(max(1, concurrency))
         self._rpm = AsyncLimiter(max_requests_per_minute, time_period=60) if max_requests_per_minute else None
-        self._rps = AsyncLimiter(max_requests_per_second, time_period=1) if max_requests_per_second else None
+        self._rps = AsyncLimiter(max_requests_per_second, time_period=time_period) if max_requests_per_second else None
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
     async def _one_call(self, text: str) -> List[float] | None:
@@ -48,9 +49,13 @@ class OpenAIEmbedder(BaseEmbedder):
             return [item.embedding for item in response.data][0]
         except Exception as e:
             logger.error(f"[OpenAI API Embedder] Exception occurred: {e}")
-            return None
+            raise
 
-    async def embed(self, texts: Union[str, List[str]], progress_bar_desc=None) -> List[List[float]]:
+    async def embed(
+            self,
+            texts: Union[str, List[str]],
+            progress_bar_desc=None
+    ) -> tuple[List[List[float]], BaseException]:
         if isinstance(texts, str):
             texts = [texts]
 
@@ -58,7 +63,7 @@ class OpenAIEmbedder(BaseEmbedder):
             runner = AsyncRunner(self._sem, self._rps, self._rpm, pbar)
             tasks = [runner.make_request(self._one_call, text=text) for text in texts]
 
-            return await asyncio.gather(*tasks, return_exceptions=True)
+            return await asyncio.gather(*tasks, return_exceptions=True) # type: ignore
 
     async def aclose(self):
         try:
