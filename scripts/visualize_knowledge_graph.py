@@ -208,6 +208,7 @@ def create_visualization(
         notebook=False,
         select_menu=True,
         filter_menu=True,
+        cdn_resources='remote',
     )
 
     # Configure physics for better layout
