@@ -173,7 +173,12 @@ class OpenAIClient(BaseLLM):
                 else:
                     input_instruction = req.prompt
 
-                await self.cache.set(req.cache_key, value, input_instruction=input_instruction)
+                await self.cache.set(
+                    req.cache_key,
+                    value,
+                    input_instruction=input_instruction,
+                    model_name=model_name or self.model_name,
+                )
                 results[req.index] = value
             else:
                 results[req.index] = None

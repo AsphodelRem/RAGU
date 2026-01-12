@@ -345,6 +345,12 @@ def make_llm_cache_key(
     combined = "\n".join(key_parts)
     return compute_mdhash_id(combined, prefix="llm-cache-")
 
+def make_embedding_cache_key(text: str, model_name: str) -> str:
+    """
+    Build a cache key from text and model name.
+    """
+    key_str = f"[model]: {model_name}\n[text]: {text}"
+    return compute_mdhash_id(key_str, prefix="emb-cache-")
 
 class TextCache:
     """
@@ -468,6 +474,7 @@ class TextCache:
         value: Any,
         *,
         input_instruction: Optional[str] = None,
+        model_name: Optional[str] = None,
     ) -> None:
         """
         Store a value in cache.
@@ -475,6 +482,7 @@ class TextCache:
         :param key: Cache key.
         :param value: Value to cache (string or BaseModel).
         :param input_instruction: Optional input/prompt that produced this value.
+        :param model_name: Optional model name that produced this value.
         """
         # Serialize BaseModel to dict for storage
         if isinstance(value, BaseModel):
@@ -485,6 +493,8 @@ class TextCache:
         payload: Dict[str, Any] = {"response": cached_value}
         if input_instruction is not None:
             payload["input"] = input_instruction
+        if model_name is not None:
+            payload["model"] = model_name
         payload["time"] = datetime.now(timezone.utc).isoformat()
 
         self._mem_cache[key] = payload
@@ -552,7 +562,7 @@ class EmbeddingCache:
         except Exception as e:
             logger.warning(f"Failed to load embedding cache from {self._cache_path}: {e}")
 
-    async def _flush_cache(self) -> None:
+    async def flush_cache(self) -> None:
         """
         Flush cache to disk.
         """
@@ -577,9 +587,11 @@ class EmbeddingCache:
                 logger.warning(f"Failed to flush embedding cache to {self._cache_path}: {e}")
 
     def _write_cache_file(self, path: Path) -> None:
-        """Write cache to file (runs in thread pool)."""
+        """
+        Write cache to file.
+        """
         with path.open("wb") as f:
-            pickle.dump(self._mem_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(self._mem_cache, f, protocol=pickle.HIGHEST_PROTOCOL) # type: ignore
 
     async def get(self, key: str) -> Optional[List[float]]:
         """
@@ -602,9 +614,11 @@ class EmbeddingCache:
 
         # Flush to disk if threshold reached
         if self._pending_disk_writes >= self.flush_every_n_writes:
-            await self._flush_cache()
+            await self.flush_cache()
 
     async def close(self) -> None:
-        """Flush any pending writes and close cache."""
+        """
+        Flush any pending writes and close cache.
+        """
         if self._pending_disk_writes > 0:
-            await self._flush_cache()
+            await self.flush_cache()

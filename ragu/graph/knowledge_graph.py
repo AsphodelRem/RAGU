@@ -76,11 +76,16 @@ class KnowledgeGraph:
         for entity in entities:
             if await self.index.graph_backend.has_node(entity.id):
                 entity_to_merge: Entity = await self.index.graph_backend.get_node(entity.id)
+                # Only add description if it's not already present
+                if entity.description and entity.description not in entity_to_merge.description:
+                    merged_description = entity_to_merge.description + "\n" + entity.description
+                else:
+                    merged_description = entity_to_merge.description
                 entity_to_past = Entity(
                     id=entity_to_merge.id,
                     entity_name=entity_to_merge.entity_name,
                     entity_type=entity_to_merge.entity_type,
-                    description=entity_to_merge.description + entity.description,
+                    description=merged_description,
                     clusters=entity_to_merge.clusters + entity.clusters,
                     source_chunk_id=list(set(entity_to_merge.source_chunk_id + entity.source_chunk_id)),
                 )
@@ -115,12 +120,17 @@ class KnowledgeGraph:
                 relation.object_id
             )
             if relation_to_merge:
+                # Only add description if it's not already present
+                if relation.description and relation.description not in relation_to_merge.description:
+                    merged_description = relation_to_merge.description + "\n" + relation.description
+                else:
+                    merged_description = relation_to_merge.description
                 relation_to_past = Relation(
                     subject_id=relation_to_merge.subject_id,
                     object_id=relation_to_merge.object_id,
                     subject_name=relation_to_merge.subject_name,
                     object_name=relation_to_merge.object_name,
-                    description=relation_to_merge.description + relation.description,
+                    description=merged_description,
                     relation_strength=sum([relation_to_merge.relation_strength, relation.relation_strength]) * 0.5,
                     source_chunk_id=list(set(relation_to_merge.source_chunk_id + relation.source_chunk_id)),
                 )
