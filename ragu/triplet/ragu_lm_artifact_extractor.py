@@ -4,60 +4,67 @@ import asyncio
 import itertools
 import re
 import time
+from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Any, Optional, Union
 
 import openai
-from aiolimiter import AsyncLimiter
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 from tqdm.asyncio import tqdm_asyncio
 
 from ragu.chunker.types import Chunk
+from ragu.common.batch_generator import BatchGenerator
+from ragu.common.cache import TextCache, make_llm_cache_key
 from ragu.common.logger import logger
 from ragu.graph.types import Entity, Relation
-from ragu.common.cache import CachedLLMCall, CacheResult
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
-from ragu.utils.ragu_utils import AsyncRunner
+
 
 # TODO: move system prompts to PromptTemplate class
 SYSTEM_PROMPT_RU = "Вы - эксперт в области анализа текстов и извлечения семантической информации из них."
 
 
+@dataclass
+class ChunkContext:
+    """
+    Tracks extraction state for a single chunk through all pipeline stages.
+    """
+    chunk: Chunk
+    raw_entities: List[str] = field(default_factory=list)
+    normalized_entities: List[str] = field(default_factory=list)
+    entities: List[Entity] = field(default_factory=list)
+    relations: List[Relation] = field(default_factory=list)
+
+
 class RaguLmArtifactExtractor(BaseArtifactExtractor):
+    """
+    RAGU-LM artifact extractor with stage-by-stage batch processing.
+    """
+
     def __init__(
         self,
         ragu_lm_vllm_url: str,
-        model: str = "RaguTeam/RAGU-lm",
+        model_name: str = "RaguTeam/RAGU-lm",
         system_prompt: str = SYSTEM_PROMPT_RU,
         temperature: float = 0.0,
         top_p: float = 0.95,
         top_k: int = 100,
-        max_requests_per_minute: Optional[int] = 600,
-        max_requests_per_second: Optional[int] = 10,
-        concurrency: int = 10,
-        request_timeout: int = 60,
+        concurrency: int = 64,
+        request_timeout: int = 120,
+        cache_flush_every: int = 100,
     ) -> None:
         """
-        Artifact extractor powered by RAGU-LM. Supports only Russian language.
-
-        The full pipeline:
-        1. Extract unnormalized entities from raw text.
-            For example: "Мама дала кошке воды." -> ["Мама", "кошке"]
-        2. Entity normalization (lemmatization).
-            For example: кошке -> кошка
-        3. Entity description generation.
-        4. Relation extraction between entities.
+        Artifact extractor powered by RAGU-LM with optimized batch processing.
 
         :param ragu_lm_vllm_url: Base URL of the deployed vLLM server.
-        :param model: Model name used for inference.
+        :param model_name: Model name used for inference.
         :param system_prompt: System instruction for the language model.
         :param temperature: Sampling temperature used in generation.
         :param top_p: Probability mass for nucleus sampling.
         :param top_k: Number of tokens considered in top-k sampling.
-        :param max_requests_per_minute: Optional rate limit per minute.
-        :param max_requests_per_second: Optional rate limit per second.
-        :param concurrency: Maximum number of concurrent asynchronous requests.
+        :param concurrency: Maximum concurrent requests (default 64 for small models).
         :param request_timeout: Timeout in seconds for each request.
+        :param cache_flush_every: Flush cache to disk every N requests (default 100).
         """
         super().__init__(prompts=[
             "ragu_lm_entity_extraction",
@@ -67,7 +74,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         ])
 
         self.base_url = ragu_lm_vllm_url
-        self.model = model
+        self.model_name = model_name
 
         self.system_prompt = system_prompt
         self.temperature = temperature
@@ -75,8 +82,6 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         self.top_k = top_k
 
         self._sem = asyncio.Semaphore(max(1, concurrency))
-        self._rpm = AsyncLimiter(max_requests_per_minute, time_period=60) if max_requests_per_minute else None
-        self._rps = AsyncLimiter(max_requests_per_second, time_period=1) if max_requests_per_second else None
 
         self.client = AsyncOpenAI(
             base_url=self.base_url,
@@ -84,9 +89,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
             timeout=request_timeout,
         )
 
-        self._cached_llm_call = CachedLLMCall(
-            fn=lambda text: self._async_call(system_prompt=self.system_prompt, prompt=text),
-        )
+        self._cache = TextCache(flush_every_n_writes=cache_flush_every)
 
     async def extract(
         self,
@@ -95,56 +98,220 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         **kwargs: Any,
     ) -> Tuple[List[Entity], List[Relation]]:
         """
-        Run the full knowledge extraction pipeline via RAGU-LM. Aims to Russian language.
+        Run optimized knowledge extraction pipeline via RAGU-LM.
 
-        Perform the following steps:
-        - Extract unnormalized entities from raw text.
-        - Normalize entities.
-        - Generate descriptions for normalized entities.
-        - Extract relations between extracted entities within each chunk.
+        Uses stage-by-stage batch processing for better vLLM utilization:
+        1. Extract entities from chunks
+        2. Normalize entities across chunks
+        3. Generate descriptions for entities
+        4. Extract relations for inner product of entities from every chunk
 
         :param chunks: Text chunks to process.
-
-        :return: Tuple of lists of `Entity` and `Relation` objects - extracted entities and relations.
+        :return: Tuple of (entities, relations) extracted from all chunks.
         """
+        if not chunks:
+            return [], []
 
         await self._check_connection()
+        start_time = time.time()
 
-        durations = []
-        result_entities, result_relations = [], []
-        for i, chunk in enumerate(chunks):
-            logger.info(f"[{i}/{len(chunks)}] Processing chunk: {chunk.id}")
-            start_time = time.time()
+        contexts = [ChunkContext(chunk=chunk) for chunk in chunks]
 
-            # Extract unnormalized entities from raw text.
-            raw = await self.extract_artifacts(chunk)
+        # Stage 1: Extract raw entities from chunks
+        logger.info(f"Stage 1/4: Extracting entities from {len(chunks)} chunks...")
+        await self._batch_extract_entities(contexts)
+        total_raw = sum(len(ctx.raw_entities) for ctx in contexts)
+        logger.info(f"Extracted {total_raw} raw entities from {len(chunks)} chunks")
 
-            # Lemmatize entities.
-            normalized_payloads = await self.normalize_entities(raw, chunk)
+        # Stage 2: Normalize entities
+        logger.info(f"Stage 2/4: Normalizing {total_raw} entities...")
+        await self._batch_normalize_entities(contexts)
+        total_normalized = sum(len(ctx.normalized_entities) for ctx in contexts)
+        logger.info(f"Normalized to {total_normalized} entities")
 
-            # Extract descriptions for entities.
-            entities = await self.extract_entity_descriptions(normalized_payloads, chunk)
+        # Stage 3: Generate descriptions for entities
+        logger.info(f"Stage 3/4: Generating descriptions for {total_normalized} entities...")
+        await self._batch_generate_descriptions(contexts)
+        total_entities = sum(len(ctx.entities) for ctx in contexts)
+        logger.info(f"Created {total_entities} entity objects")
 
-            # Extract relations between entities.
-            relations = await self.extract_relations(entities, chunk)
+        # Stage 4: Extract relations for entity pairs
+        total_pairs = sum(len(ctx.entities) * (len(ctx.entities) - 1) for ctx in contexts)
+        logger.info(f"Stage 4/4: Extracting relations for {total_pairs} entity pairs...")
+        await self._batch_extract_relations(contexts)
+        total_relations = sum(len(ctx.relations) for ctx in contexts)
+        logger.info(f"Extracted {total_relations} relations")
 
-            end_time = time.time()
-            durations.append(end_time - start_time)
+        all_entities = [e for ctx in contexts for e in ctx.entities]
+        all_relations = [r for ctx in contexts for r in ctx.relations]
 
-            logger.info(f"Chunk processing time: {end_time - start_time:.2f} seconds")
-            logger.info(f"Extracted {len(entities)} entities and {len(relations)} relations from chunk {chunk.id}\n")
+        await self._cache.flush_cache()
 
-            result_entities.extend(entities)
-            result_relations.extend(relations)
-
+        elapsed = time.time() - start_time
         logger.info(
-            f"Extracted {len(result_entities)} entities and {len(result_relations)} relations in total from {len(chunks)} chunks"
-        )
-        logger.info(f"Total processing time: {sum(durations):.2f} seconds, "
-                    f"mean time per chunk: {sum(durations) / len(durations):.2f} seconds"
+            f"Extraction complete: {len(all_entities)} entities, {len(all_relations)} relations "
+            f"from {len(chunks)} chunks in {elapsed:.2f}s"
         )
 
-        return result_entities, result_relations
+        return all_entities, all_relations
+
+    async def _batch_extract_entities(self, contexts: List[ChunkContext]) -> None:
+        """
+        Stage 1: Extract raw entities from all chunks in a single batch.
+        """
+        template = self.get_prompt("ragu_lm_entity_extraction")
+
+        prompts = []
+        for ctx in contexts:
+            prompt, _ = template.get_instruction(text=ctx.chunk.content)
+            prompts.extend(prompt if isinstance(prompt, list) else [prompt])
+
+        if not prompts:
+            return
+
+        responses = await self._run(prompts, description="Extracting entities.")
+
+        # Parse responses back to contexts
+        for ctx, response in zip(contexts, responses):
+            if not self._ok(response):
+                continue
+
+            lines = self._content(response).splitlines()
+            entities = [ln.strip() for ln in lines if ln.strip()]
+            unique_entities = list(dict.fromkeys(entities))  # Preserve order, remove duplicates
+
+            if len(unique_entities) != len(entities):
+                logger.debug(f"Removed {len(entities) - len(unique_entities)} duplicate entities from chunk {ctx.chunk.id}")
+
+            ctx.raw_entities = unique_entities
+
+    async def _batch_normalize_entities(self, contexts: List[ChunkContext]) -> None:
+        """
+        Stage 2: Normalize all entities across all chunks in a single batch.
+        """
+        template = self.get_prompt("ragu_lm_entity_normalization")
+
+        prompts = []
+        prompt_map: List[Tuple[ChunkContext, int]] = []  # (context, entity_index)
+
+        for ctx in contexts:
+            if not ctx.raw_entities:
+                continue
+            instructions, _ = template.get_instruction(
+                source_text=ctx.chunk.content,
+                source_entity=ctx.raw_entities,
+            )
+            instruction_list = instructions if isinstance(instructions, list) else [instructions]
+            for i, instruction in enumerate(instruction_list):
+                prompts.append(instruction)
+                prompt_map.append((ctx, i))
+
+        if not prompts:
+            return
+
+        responses = await self._run(prompts, description="Normalizing entities")
+
+        # Parse responses back to contexts
+        for (ctx, entity_idx), response in zip(prompt_map, responses):
+            if not self._ok(response):
+                continue
+            normalized = self._content(response)
+            if normalized:
+                ctx.normalized_entities.append(normalized)
+
+    async def _batch_generate_descriptions(self, contexts: List[ChunkContext]) -> None:
+        """
+        Stage 3: Generate descriptions for all entities in a single batch.
+        """
+        template = self.get_prompt("ragu_lm_entity_description")
+
+        prompts = []
+        prompt_map: List[Tuple[ChunkContext, str]] = []  # (context, entity_name)
+
+        for ctx in contexts:
+            if not ctx.normalized_entities:
+                continue
+            instructions, _ = template.get_instruction(
+                normalized_entity=ctx.normalized_entities,
+                source_text=ctx.chunk.content,
+            )
+            instruction_list = instructions if isinstance(instructions, list) else [instructions]
+            for instruction, entity_name in zip(instruction_list, ctx.normalized_entities):
+                prompts.append(instruction)
+                prompt_map.append((ctx, entity_name))
+
+        if not prompts:
+            return
+
+        responses = await self._run(prompts, description="Generating descriptions")
+
+        # Parse responses back to contexts
+        for (ctx, entity_name), response in zip(prompt_map, responses):
+            if not self._ok(response):
+                continue
+            description = self._content(response)
+            if not description:
+                continue
+
+            entity = Entity(
+                entity_name=entity_name,
+                entity_type="UNKNOWN",
+                description=description,
+                source_chunk_id=[ctx.chunk.id],
+                documents_id=[ctx.chunk.doc_id] if getattr(ctx.chunk, "doc_id", None) else [],
+                clusters=[],
+            )
+            ctx.entities.append(entity)
+
+    async def _batch_extract_relations(self, contexts: List[ChunkContext]) -> None:
+        """
+        Stage 4: Extract relations for all entity pairs in a single batch.
+        """
+        template = self.get_prompt("ragu_lm_relation_description")
+
+        prompts = []
+        prompt_map: List[Tuple[ChunkContext, Entity, Entity]] = []  # (context, subject, object)
+
+        for ctx in contexts:
+            if len(ctx.entities) < 2:
+                continue
+            for subject, obj in itertools.permutations(ctx.entities, 2):
+                instructions, _ = template.get_instruction(
+                    first_normalized_entity=subject.entity_name,
+                    second_normalized_entity=obj.entity_name,
+                    source_text=ctx.chunk.content,
+                )
+                instruction_list = instructions if isinstance(instructions, list) else [instructions]
+                for instruction in instruction_list:
+                    prompts.append(instruction)
+                    prompt_map.append((ctx, subject, obj))
+
+        if not prompts:
+            return
+
+        responses = await self._run(prompts, description="Extracting relations")
+
+        # Parse responses and collect candidates per context
+        context_candidates: Dict[int, List[Relation]] = {id(ctx): [] for ctx in contexts}
+
+        for (ctx, subject, obj), response in zip(prompt_map, responses):
+            if not self._ok(response):
+                continue
+            description = self._content(response)
+            relation = Relation(
+                subject_id=subject.id,
+                object_id=obj.id,
+                subject_name=subject.entity_name,
+                object_name=obj.entity_name,
+                description=description,
+                source_chunk_id=[ctx.chunk.id],
+            )
+            context_candidates[id(ctx)].append(relation)
+
+        # Filter relations per context
+        for ctx in contexts:
+            candidates = context_candidates[id(ctx)]
+            ctx.relations = self.filter_relations(candidates)
 
     async def _async_call(self, system_prompt: str, prompt: str) -> ChatCompletion:
         messages = [
@@ -152,23 +319,19 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
             {"role": "user", "content": prompt},
         ]
 
-        return await self.client.chat.completions.create(  # type: ignore
+        return await self.client.chat.completions.create(
             messages=messages,  # type: ignore
-            model=self.model,
+            model=self.model_name,
             temperature=self.temperature,
             top_p=self.top_p,
         )
 
     @staticmethod
     def _ok(resp: Any) -> bool:
-        if isinstance(resp, CacheResult):
-            resp = resp.response
         return (resp is not None) and (not isinstance(resp, Exception))
 
     @staticmethod
     def _content(resp: Any) -> str:
-        if isinstance(resp, CacheResult):
-            resp = resp.response
         if isinstance(resp, str):
             return resp.strip()
         if isinstance(resp, dict):
@@ -188,197 +351,79 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         try:
             _ = await self._async_call("", "")
         except openai.APIConnectionError:
-            raise ConnectionError("It looks like the vllm with RAGU-LM is not running. Run it via 'vllm serve'. See docs for more details.")
+            raise ConnectionError(
+                "It looks like the vllm with RAGU-LM is not running. "
+                "Run it via 'vllm serve'. See docs for more details."
+            )
         except openai.NotFoundError:
-            raise ValueError("It looks like the model is not available. Check the model name that you pass to vllm.")
+            raise ValueError(
+                "It looks like the model is not available. "
+                "Check the model name that you pass to vllm."
+            )
 
     async def _run(self, prompts: List[str], description: str = "") -> List[Any]:
         if not prompts:
             return []
 
         with tqdm_asyncio(total=len(prompts), desc=description if description else None) as pbar:
-            runner = AsyncRunner(self._sem, self._rps, self._rpm, pbar)
             results: List[Any] = [None] * len(prompts)
-            tasks: list[tuple[int, asyncio.Task[Any]]] = []
+            pending: List[Tuple[int, str, str]] = []  # (index, prompt, cache_key)
             cache_hits = 0
 
+            # Check cache for all prompts
             for idx, prompt in enumerate(prompts):
-                cached = self._cached_llm_call.peek(prompt, system_prompt=self.system_prompt)
+                cache_key = make_llm_cache_key(
+                    prompt=prompt,
+                    system_prompt=self.system_prompt,
+                    model_name=self.model_name,
+                )
+                cached = await self._cache.get(cache_key)
                 if cached is not None:
                     results[idx] = cached
                     cache_hits += 1
-                    if pbar:
-                        pbar.update(1)
-                    continue
-                task = asyncio.create_task(
-                    runner.make_request(
-                        self._cached_llm_call,
-                        prompt=prompt,
-                        system_prompt=self.system_prompt,
-                    )
-                )
-                tasks.append((idx, task))
-
-            if tasks:
-                gathered = await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
-                for (idx, _), value in zip(tasks, gathered):
-                    results[idx] = value
+                    pbar.update(1)
+                else:
+                    pending.append((idx, prompt, cache_key))
 
             if cache_hits:
-                logger.info(f"Cache served {cache_hits}/{len(prompts)} responses for {description or 'LLM call'}")
+                logger.info(f"Cache served {cache_hits}/{len(prompts)} responses")
 
+            # Process pending requests in batches
+            if pending:
+                async def process_request(idx: int, prompt: str, cache_key: str) -> Tuple[int, str, str, Any]:
+                    input_instruction = f"[system]: {self.system_prompt}\n[user]: {prompt}"
+                    async with self._sem:
+                        try:
+                            response = await self._async_call(self.system_prompt, prompt)
+                            content = self._content(response)
+                            return idx, cache_key, input_instruction, content
+                        except Exception as e:
+                            return idx, cache_key, input_instruction, e
+                        finally:
+                            pbar.update(1)
+
+                # Process in batches to save cache periodically
+                for batch in BatchGenerator(pending, self._cache.flush_every_n_writes).get_batches():
+                    tasks = [process_request(idx, prompt, cache_key) for idx, prompt, cache_key in batch]
+                    completed = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    for result in completed:
+                        if isinstance(result, Exception):
+                            continue
+                        idx, cache_key, input_instruction, content = result
+                        results[idx] = content
+                        if not isinstance(content, Exception):
+                            await self._cache.set(
+                                cache_key,
+                                content,
+                                input_instruction=input_instruction,
+                                model_name=self.model_name,
+                            )
+
+                    await self._cache.flush_cache()
+
+            await self._cache.flush_cache()
             return results
-
-    async def extract_artifacts(self, chunk) -> List[Dict[str, Any]]:
-        """
-        Extract raw entity candidates from input chunks via RAGU-LM.
-
-        :param chunk: Text chunk to process.
-        :returns: List of dictionaries with entity lists and chunks from which they were extracted..
-        """
-
-        prompt, _ = self.get_prompt("ragu_lm_entity_extraction").get_instruction(text=chunk.content)
-        responses = await self._run(prompt, description="Extracting entities")
-
-        extracted = []
-        for response in responses:
-            if not self._ok(response):
-                continue
-            lines = self._content(response).splitlines()
-
-            entities = [ln.strip() for ln in lines if ln.strip()]
-            unique_entities = list(set(entities))
-
-            if len(unique_entities) != len(entities):
-                removed = [entity for entity in entities if entities.count(entity) > 1]
-                logger.info(
-                    f"Removed {len(entities) - len(unique_entities)} duplicates from entities. "
-                    f"Maybe hallucination? Removed entities: {removed}"
-                )
-            extracted.extend(unique_entities)
-
-        logger.info(f"Extracted {len(extracted)} entities")
-        return extracted
-
-    async def normalize_entities(self, entities: List[Dict], chunk: Chunk) -> List[Dict[str, Any]]:
-        """
-        Normalize extracted entities for consistency.
-
-        Example:
-            "Софье Алексеевной" -> "Софья Алексеева"
-            "Петру Первому" -> "Петр Первый"
-            "Искусственного интеллекта" -> "Искусственный интеллект"
-
-        :param entities: List of raw extracted entities.
-        :param chunk: Chunk from which entities were extracted.
-        :returns: List of normalized entity payloads.
-        """
-        prompts, _ = self.get_prompt("ragu_lm_entity_normalization").get_instruction(
-            source_text=chunk.content,
-            source_entity=entities,
-        )
-
-        responses = await self._run(prompts, description="Normalizing entities")
-
-        normalized_entities = []
-        for response in responses:
-            if not self._ok(response):
-                continue
-            normalized = self._content(response)
-            if not normalized:
-                continue
-            normalized_entities.append(normalized)
-
-        return normalized_entities
-
-    async def extract_entity_descriptions(self, entities: List[str], chunk: Chunk) -> List[Entity]:
-        """
-        Generate descriptive summaries for normalized entities.
-
-        :param entities: List of normalized entities and their associated chunks.
-        :param chunk: Chunk from which entities were extracted.
-        :returns: List of fully described `Entity` objects.
-        """
-        prompts, _ = self.get_prompt("ragu_lm_entity_description").get_instruction(
-            normalized_entity=entities,
-            source_text=chunk.content,
-        )
-
-        responses = await self._run(prompts, description="Generating entity descriptions")
-
-        described: List[Entity] = []
-        candidates: List[tuple[str, str, Chunk]] = []
-        for response, old_entity in zip(responses, entities):
-            if not self._ok(response):
-                continue
-            description = self._content(response)
-            if not description:
-                continue
-
-            candidates.append((old_entity, description, chunk))
-
-        for (name, description, chunk) in candidates:
-            entity = Entity(
-                entity_name=name,
-                entity_type="UNKNOWN",
-                description=description,
-                source_chunk_id=[chunk.id],
-                documents_id=[chunk.doc_id] if getattr(chunk, "doc_id", None) else [],
-                clusters=[],
-            )
-            described.append(entity)
-
-        return described
-
-    async def extract_relations(self, entities: List[Entity], chunk: Chunk) -> List[Relation]:
-        """
-        Extract relations between extracted entities within each chunk.
-
-        Generate relation description between inner product of entities.
-
-        :param entities: List of `Entity` objects.
-        :param chunk: Chunk from which entities were extracted.
-        :returns: List of `Relation` objects describing inter-entity links.
-        """
-        if not entities:
-            return []
-
-        template = self.get_prompt("ragu_lm_relation_description")
-
-        prompts, pairs = [], []
-        entity_inner_product = list(itertools.permutations(entities, 2))
-        for subject_entity, object_entity in entity_inner_product:
-            instructions, _ = template.get_instruction(
-                first_normalized_entity=subject_entity.entity_name,
-                second_normalized_entity=object_entity.entity_name,
-                source_text=chunk.content,
-            )
-            for instruction in instructions:
-                pairs.append((subject_entity, object_entity))
-                prompts.append(instruction)
-
-        responses = await self._run(prompts, description="Extract relations")
-
-        candidates: List[Relation] = []
-        for resp, (subject_entity, object_entity) in zip(responses, pairs):
-            if not self._ok(resp):
-                continue
-            description = self._content(resp)
-            relation = Relation(
-                subject_id=subject_entity.id,
-                object_id=object_entity.id,
-                subject_name=subject_entity.entity_name,
-                object_name=object_entity.entity_name,
-                description=description,
-                source_chunk_id=[chunk.id],
-            )
-            candidates.append(relation)
-
-        relations = self.filter_relations(candidates)
-        logger.info(f"Extracted {len(relations)} relations from {len(entities)} entities")
-
-        return relations
-
 
     @staticmethod
     def filter_relations(
@@ -386,15 +431,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
             negative_pattern: Optional[Union[str, re.Pattern[str]]] = None,
     ) -> List[Relation]:
         """
-        Filter out relations extracted by RAGU-LM that are empty, irrelevant, or explicitly negated.
-
-        This function applies a combined regular expression pattern that detects
-        negations and absence phrases such as "нет связи", "не содержит информации",
-        "отсутствует отношение", etc.
-
-        :param relations: List of extracted `Relation` objects.
-        :param negative_pattern: Optional custom regular expression pattern to override default.
-        :returns: Filtered list of relations with only meaningful descriptions.
+        Filter out empty, irrelevant, or negated relations.
         """
         def _clean_bullet(s: str) -> str:
             return re.sub(r"^[\-\u2022]\s*", "", (s or "").strip())
@@ -421,7 +458,10 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         if isinstance(negative_pattern, re.Pattern):
             neg = negative_pattern
         else:
-            neg = re.compile(negative_pattern or r"(?:" + "|".join(NEGATION_PATTERNS) + r")", flags=re.IGNORECASE | re.UNICODE)
+            neg = re.compile(
+                negative_pattern or r"(?:" + "|".join(NEGATION_PATTERNS) + r")",
+                flags=re.IGNORECASE | re.UNICODE
+            )
 
         kept: List[Relation] = []
         for rel in relations:
