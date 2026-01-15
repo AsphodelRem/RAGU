@@ -23,7 +23,14 @@ Our huggingface community is [here](https://huggingface.co/RaguTeam/)
 ---
 
 ## Install
+Better way is a local build:
+```commandline
+git clone https://github.com/AsphodelRem/RAGU.git
+cd RAGU
+uv pip install -e .
+```
 
+From pypi:
 ```bash
 pip install graph_ragu
 ```
@@ -38,6 +45,7 @@ pip install graph_ragu[local]
 ## Quickstart
 
 ### Simple example of building knowledge graph
+
 ```python
 import asyncio
 
@@ -55,10 +63,11 @@ LLM_MODEL_NAME = "..."
 LLM_BASE_URL = "..."
 LLM_API_KEY = "..."
 
+
 async def main():
     # Load .txt documents from folder
     docs = read_text_from_files("/path/to/files")
-    
+
     # Choose chunker 
     chunker = SimpleChunker(max_chunk_size=2048, overlap=0)
 
@@ -73,7 +82,7 @@ async def main():
 
     # Set up artifacts extractor
     artifact_extractor = ArtifactsExtractorLLM(
-        client=client, 
+        client=client,
         do_validation=True
     )
 
@@ -88,14 +97,15 @@ async def main():
         embedder,
         graph_storage_kwargs={"clustering_params": {"max_cluster_size": 6}}
     )
-    
+
     # Build KG
     knowledge_graph = await KnowledgeGraph(
-        extraction_pipeline=pipeline,           # Pass pipeline
-        index=index,                            # Pass storage
-        make_community_summary=True,            # Generate community summary if you want
-        language="russian",                     # You can set preferred language
+        extraction_pipeline=pipeline,  # Pass pipeline
+        index=index,  # Pass storage
+        make_community_summary=True,  # Generate community summary if you want
+        language="russian",  # You can set preferred language
     ).build_from_docs(docs)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -183,17 +193,6 @@ The pipeline operates in several stages:
 2. Normalize entities into canonical forms.
 3. Generate entity descriptions.
 4. Extract relations based on the inner product between entities.
-
-#### 3. RAGU-lm with small models (for russian language)
-
-A modular multi-model pipeline:
-
-1. [runne_contrastive_ner](https://github.com/bond005/runne_contrastive_ner) — extracts entities (NER step).
-2. ragu_lm — performs entity normalization.
-3. ragu_lm — generates concise definitions and descriptions for entities.
-4. ragu_re — extracts relation candidates. 
-5. ragu_lm — refines and summarizes relations with their textual descriptions.
-
 
 ### Comparison
 | Model                 | Dataset | F1 (Entities) | F1 (Relations) |
