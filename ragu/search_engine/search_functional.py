@@ -68,35 +68,64 @@ async def _find_most_related_text_unit_from_entities(
     all_text_units = [t["data"] for t in chunks]
     return all_text_units
 
-#
-# async def _find_most_related_community_from_entities(
-#         entities: List[Entity],
-#         knowledge_graph: KnowledgeGraph,
-#         level: int = 2
-# ):
-#     related_communities = set()
-#     for node in entities:
-#         if node.clusters:
-#             related_communities.update(node.clusters)
-#
-#     related_communities = list(filter(lambda dp: dp["level"] <= level, related_communities))
-#     related_community_data = asyncio.gather(*[
-#         knowledge_graph.index.community_summary_kv_storage.get_by_id(cluster_data.get("cluster_id"))
-#         for cluster_data in related_communities
-#     ])
-#
-#     related_community_data = [
-#         community for community in related_community_data if community and community.summary is not None
-#     ]
-#
-#     related_community_data = sorted(
-#         related_community_data,
-#         key=lambda x: x["community_report"].get("rating", -1),
-#         reverse=True
-#     )
-#
-#     sorted_community_datas = [
-#         combine_report_text(community["community_report"]) for community in related_community_data
-#     ]
-#
-#     return sorted_community_datas
+async def _find_documents_id(entities: List[Entity]):
+    documents_set = set()
+    for entity in entities:
+        if hasattr(entity, 'documents_id') and entity.documents_id:
+            documents_set.update(entity.documents_id)
+    return list(documents_set)
+
+
+async def _find_most_related_community_from_entities(
+        entities: List[Entity],
+        knowledge_graph: KnowledgeGraph,
+        level: int = 2
+):
+    if not entities:
+        return []
+
+    desired_pairs: set[tuple[int, int]] = set()
+    for entity in entities:
+        if not getattr(entity, "clusters", None):
+            continue
+        for cluster_data in entity.clusters:
+            try:
+                c_level = int(cluster_data.get("level", 9999))
+            except Exception:
+                continue
+            if c_level <= level:
+                cid = cluster_data.get("cluster_id")
+                if cid is not None:
+                    desired_pairs.add((c_level, int(cid)))
+
+    if not desired_pairs:
+        return []
+
+    community_store = knowledge_graph.index.community_kv_storage
+    summary_store = knowledge_graph.index.community_summary_kv_storage
+
+    all_comm_keys = await community_store.all_keys()
+    if not all_comm_keys:
+        return []
+
+    all_comm_data = await community_store.get_by_ids(all_comm_keys)
+
+    matched_ids: list[str] = []
+    for key, data in zip(all_comm_keys, all_comm_data):
+        if not data:
+            continue
+        try:
+            comm_level = int(data.get("level", -1))
+            comm_cid = int(data.get("cluster_id", -1))
+        except Exception:
+            continue
+        if (comm_level, comm_cid) in desired_pairs:
+            matched_ids.append(key)
+
+    if not matched_ids:
+        return []
+
+    summaries = await summary_store.get_by_ids(matched_ids)
+    final_summaries = [s for s in summaries if s]
+
+    return final_summaries
