@@ -311,7 +311,7 @@ class RelationSummarizer(RaguGenerativeModule):
         grouped_relations = relations_df.groupby(["subject_id", "object_id"]).agg(
             subject_name=("subject_name", "first"),
             object_name=("object_name", "first"),
-            description=("description", lambda x: "\n".join(x.dropna().astype(str))),
+            description=("description", lambda x: "\n".join(x.dropna().drop_duplicates().astype(str))),
             relation_strength=("relation_strength", "mean"),
             source_chunk_id=("source_chunk_id", lambda s: list(set(
                 chain.from_iterable(v if isinstance(v, (list, tuple, set)) else [v] for v in s)))
