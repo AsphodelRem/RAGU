@@ -3,6 +3,7 @@ from itertools import chain
 from typing import List, Any
 
 import pandas as pd
+from pandas.core.interchange.dataframe_protocol import DataFrame
 from sklearn.cluster import DBSCAN
 
 from ragu.common.base import RaguGenerativeModule
@@ -72,7 +73,18 @@ class EntitySummarizer(RaguGenerativeModule):
             return []
 
         grouped_entities_df = self.group_entities(entities)
+
+        num_of_duplicated_entities = len(entities) - len(grouped_entities_df)
+        logger.info(f"Found {num_of_duplicated_entities} duplicated entities. "
+                    f"Number of unique entities: {len(grouped_entities_df)} ")
+
         entities_to_return = await self.summarize_entities(grouped_entities_df)
+
+        if len(entities_to_return) != len(grouped_entities_df):
+            logger.warning(
+                f"{len(entities_to_return) -  len(grouped_entities_df)} from {len(grouped_entities_df)} entities"
+                f"were missed during summarization."
+            )
 
         return entities_to_return
 
@@ -93,7 +105,6 @@ class EntitySummarizer(RaguGenerativeModule):
             grouped_entities_df.loc[i, "description"] = maybe_clustered
 
         entity_mask = grouped_entities_df["duplicate_count"].to_numpy() > self.summarize_only_if_more_than
-        logger.info(f"Found {entity_mask.sum()} duplicated entities.")
 
         entity_multi_desc = grouped_entities_df.loc[entity_mask]
         entity_single_desc = grouped_entities_df.loc[~entity_mask]
@@ -199,9 +210,7 @@ class RelationSummarizer(RaguGenerativeModule):
             self,
             client: BaseLLM = None,
             use_llm_summarization: bool = True,
-            use_clustering: bool = False,
             summarize_only_if_more_than: int = 5,
-            embedder: BaseEmbedder=None,
             language: str = "russian"
     ):
         _PROMPTS = ["relation_summarizer"]
@@ -235,7 +244,18 @@ class RelationSummarizer(RaguGenerativeModule):
             return []
 
         grouped_relations_df = self.group_relations(relations)
+
+        num_of_duplicated_entities = len(relations) - len(grouped_relations_df)
+        logger.info(f"Found {num_of_duplicated_entities} duplicated relations. "
+                    f"Number of unique relations: {len(grouped_relations_df)} ")
+
         relations_to_return = await self.summarize_relations(grouped_relations_df)
+
+        if len(relations_to_return) != len(grouped_relations_df):
+            logger.warning(
+                f"{len(relations_to_return) - len(grouped_relations_df)} from {len(grouped_relations_df)} relations "
+                f"were missed during summarization."
+            )
 
         return relations_to_return
 
@@ -252,7 +272,6 @@ class RelationSummarizer(RaguGenerativeModule):
         :return: A list of summarized :class:`Relation` objects.
         """
         relation_mask = grouped_relations_df["duplicate_count"].to_numpy() > self.summarize_only_if_more_than
-        logger.info(f"Found {relation_mask.sum()} duplicated relations.")
 
         relation_multi_desc = grouped_relations_df.loc[relation_mask]
         relation_single_desc = grouped_relations_df.loc[~relation_mask]
