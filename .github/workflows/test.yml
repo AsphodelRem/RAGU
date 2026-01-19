@@ -1,0 +1,38 @@
+name: Test Package
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install uv
+      run: pip install uv
+
+    - name: Install package from git
+      run: |
+        uv pip install --system git+https://github.com/AsphodelRem/RAGU.git
+
+    - name: Test import
+      run: python -c "import ragu; print(ragu.__version__)"
+
+    - name: Run tests
+      run: |
+        uv pip install --system pytest
+        pytest tests/
