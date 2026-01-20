@@ -15,24 +15,47 @@ jobs:
         python-version: ['3.10', '3.11', '3.12']
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
 
-    - name: Install uv
-      run: pip install uv
+      - name: Install uv
+        run: pip install uv
 
-    - name: Install package from git
-      run: |
-        uv pip install --system git+https://github.com/AsphodelRem/RAGU.git
+      - name: Install package from git
+        run: |
+          uv pip install --system git+https://github.com/AsphodelRem/RAGU.git
 
-    - name: Test import
-      run: python -c "import ragu; print(ragu.__version__)"
+      - name: Test import
+        run: python -c "import ragu; print(ragu.__version__)"
 
-    - name: Run tests
-      run: |
-        uv pip install --system pytest
-        pytest tests/
+      - name: Run tests
+        run: |
+          uv pip install --system pytest
+          pytest tests/
+
+  mirror:
+    name: Mirror to GitVerse
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push mirror to GitVerse
+        env:
+          GITVERSE_USERNAME: ${{ secrets.GITVERSE_USERNAME }}
+          GITVERSE_TOKEN: ${{ secrets.GITVERSE_TOKEN }}
+          GITVERSE_REPO_URL: ${{ secrets.GITVERSE_REPO_URL }}
+        run: |
+          git remote add gitverse https://${GITVERSE_USERNAME}:${GITVERSE_TOKEN}@${GITVERSE_REPO_URL#https://}
+          git push --mirror gitverse
