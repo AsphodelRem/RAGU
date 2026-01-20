@@ -58,4 +58,7 @@ jobs:
           GITVERSE_REPO_URL: ${{ secrets.GITVERSE_REPO_URL }}
         run: |
           git remote add gitverse https://${GITVERSE_USERNAME}:${GITVERSE_TOKEN}@${GITVERSE_REPO_URL#https://}
-          git push --mirror gitverse
+          git push gitverse \
+            +refs/heads/*:refs/heads/* \
+            +refs/tags/*:refs/tags/*
+
