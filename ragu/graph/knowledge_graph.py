@@ -17,12 +17,14 @@ class KnowledgeGraph:
             index: Index,
             make_community_summary: bool = True,
             remove_isolated_nodes: bool = True,
+            vectorize_chunks: bool = False,
             language: str | None = None,
     ):
         self.pipeline = extraction_pipeline
         self.index = index
         self.make_community_summary = make_community_summary
         self.remove_isolated_nodes = remove_isolated_nodes
+        self.vectorize_chunks = vectorize_chunks
 
         self.language = language if language else Settings.language
 
@@ -44,16 +46,23 @@ class KnowledgeGraph:
     async def build_from_docs(self, docs) -> "KnowledgeGraph":
         entities, relations, chunks = await self.pipeline.extract_graph(docs)
 
-        # Add entities and relations
-        await self.add_entity(entities)
-        await self.add_relation(relations)
+        # Check if we're in vector-only mode
+        is_vector_only = getattr(self.pipeline, 'build_only_vector_context', False)
 
-        if self.remove_isolated_nodes:
-            await self.index.graph_backend.remove_isolated_nodes()
+        # Add entities and relations (skip if vector-only mode)
+        if not is_vector_only:
+            await self.add_entity(entities)
+            await self.add_relation(relations)
 
-        # Save chunks
-        await self.index.insert_chunks(chunks)
-        if self.make_community_summary:
+            if self.remove_isolated_nodes:
+                await self.index.graph_backend.remove_isolated_nodes()
+
+        # Save chunks (always vectorize in vector-only mode)
+        should_vectorize = self.vectorize_chunks or is_vector_only
+        await self.index.insert_chunks(chunks, vectorize=should_vectorize)
+
+        # Build community summaries (skip if vector-only mode)
+        if self.make_community_summary and not is_vector_only:
             communities, summaries = await self.high_level_build()
             await self.index._insert_communities(communities)
             await self.index._insert_summaries(summaries)

@@ -83,6 +83,11 @@ class Index:
             DEFAULT_FILENAMES["relation_vdb_name"],
             vdb_storage_kwargs,
         )
+        chunk_vdb_storage_kwargs = self._build_storage_kwargs(
+            storage_folder,
+            DEFAULT_FILENAMES["chunk_vdb_name"],
+            vdb_storage_kwargs,
+        )
         self.graph_storage_kwargs = self._build_storage_kwargs(
             storage_folder,
             DEFAULT_FILENAMES["knowledge_graph_storage_name"],
@@ -100,6 +105,7 @@ class Index:
         # Vector storage
         self.entity_vector_db = vdb_storage_type(embedder=embedder, **self.vdb_storage_kwargs)  # type: ignore
         self.relation_vector_db = vdb_storage_type(embedder=embedder, **relation_vdb_storage_kwargs)  # type: ignore
+        self.chunk_vector_db = vdb_storage_type(embedder=embedder, **chunk_vdb_storage_kwargs)  # type: ignore
 
         # Graph storage
         self.graph_backend = graph_backend_storage(**self.graph_storage_kwargs)  # type: ignore
@@ -189,10 +195,16 @@ class Index:
         }
         await self._vdb_upsert(self.relation_vector_db, data_for_vdb, "relations")
 
-    async def insert_chunks(self, chunks: List[Chunk]) -> None:
+    async def insert_chunks(self, chunks: List[Chunk], vectorize: bool = False) -> None:
         """
         Stores raw chunks in a KV storage (id -> chunk fields).
+        Optionally vectorizes chunks and stores them in the vector database.
+
+        :param chunks: List of Chunk objects to store.
+        :param vectorize: If True, also insert chunks into the vector database for similarity search.
         """
+        tasks = []
+
         if self.chunks_kv_storage is not None:
             data_for_kv = {}
             for chunk in chunks:
@@ -200,8 +212,33 @@ class Index:
                 chunk_id = chunk_dict.pop("id")
                 data_for_kv[chunk_id] = chunk_dict
 
-            await self.chunks_kv_storage.upsert(data_for_kv)
-            await self.chunks_kv_storage.index_done_callback()
+            async def insert_to_kv():
+                await self.chunks_kv_storage.upsert(data_for_kv)
+                await self.chunks_kv_storage.index_done_callback()
+
+            tasks.append(insert_to_kv())
+
+        if vectorize:
+            tasks.append(self._insert_chunks_to_vdb(chunks))
+
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    async def _insert_chunks_to_vdb(self, chunks: List[Chunk]) -> None:
+        """
+        Inserts chunks into the vector database for similarity search.
+        """
+        if not chunks:
+            return
+
+        data_for_vdb = {
+            chunk.id: {
+                "content": chunk.content,
+                "doc_id": chunk.doc_id,
+            }
+            for chunk in chunks
+        }
+        await self._vdb_upsert(self.chunk_vector_db, data_for_vdb, "chunks")
 
     async def _insert_communities(self, communities: List[Community]) -> None:
         """

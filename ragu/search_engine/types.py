@@ -54,7 +54,7 @@ class GlobalSearchResult:
 
     _template: Template = Template(
         """
-        {%- for insight in insights %} 
+        {%- for insight in insights %}
         {{ loop.index}}. Insight: {{ insight.response }}, rating: {{ insight.rating }}
         {%- endfor %}
         """.strip()
@@ -62,3 +62,27 @@ class GlobalSearchResult:
 
     def __str__(self) -> str:
         return self._template.render(insights=self.insights)
+
+
+@dataclass
+class NaiveSearchResult:
+    chunks: list=field(default_factory=list)
+    scores: list=field(default_factory=list)
+    documents_id: list[str]=field(default_factory=list)
+
+    _template: Template = Template(
+"""
+**Retrieved Chunks**
+{%- for chunk, score in zip(chunks, scores) %}
+[{{ loop.index }}] (score: {{ "%.3f"|format(score) }})
+{{ chunk.content }}
+{%- endfor %}
+"""
+    )
+
+    def __str__(self) -> str:
+        return self._template.render(
+            chunks=self.chunks,
+            scores=self.scores,
+            zip=zip,
+        )
