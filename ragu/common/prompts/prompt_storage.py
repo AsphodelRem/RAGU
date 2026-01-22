@@ -13,7 +13,8 @@ from ragu.common.prompts.default_models import (
     GlobalSearchContextModel,
     DefaultResponseModel,
     EntityDescriptionModel,
-    RelationDescriptionModel, ClusterSummarizationModel
+    RelationDescriptionModel,
+    ClusterSummarizationModel
 )
 from ragu.common.prompts.default_templates import (
     DEFAULT_ARTIFACTS_EXTRACTOR_PROMPT,
@@ -139,6 +140,11 @@ DEFAULT_PROMPT_TEMPLATES = {
         template=DEFAULT_RESPONSE_ONLY_PROMPT,
         schema=DefaultResponseModel,
         description="Prompt for generating a local context-based search response."
+    ),
+    "naive_search": PromptTemplate(
+        template=DEFAULT_RESPONSE_ONLY_PROMPT,
+        schema=DefaultResponseModel,
+        description="Prompt for generating a naive vector RAG search response."
     ),
     "cluster_summarize": PromptTemplate(
         template=DEFAULT_CLUSTER_SUMMARIZER_PROMPT,
