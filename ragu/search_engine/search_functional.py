@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import asdict
 from typing import List
 
+from ragu.common.prompts.default_models import SubQuery
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.graph.types import Entity
 
@@ -129,3 +130,21 @@ async def _find_most_related_community_from_entities(
     final_summaries = [s for s in summaries if s]
 
     return final_summaries
+
+def _topological_sort(subqueries: List[SubQuery]) -> List[SubQuery]:
+    by_id = {q.id: q for q in subqueries}
+    visited = set()
+    ordered: List[SubQuery] = []
+
+    def visit(q: SubQuery):
+        if q.id in visited:
+            return
+        for dep in q.depends_on:
+            visit(by_id[dep])
+        visited.add(q.id)
+        ordered.append(q)
+
+    for q in subqueries:
+        visit(q)
+
+    return ordered
