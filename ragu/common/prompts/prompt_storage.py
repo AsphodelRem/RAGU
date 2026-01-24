@@ -14,7 +14,9 @@ from ragu.common.prompts.default_models import (
     DefaultResponseModel,
     EntityDescriptionModel,
     RelationDescriptionModel,
-    ClusterSummarizationModel
+    ClusterSummarizationModel,
+    QueryPlan,
+    RewriteQuery
 )
 from ragu.common.prompts.default_templates import (
     DEFAULT_ARTIFACTS_EXTRACTOR_PROMPT,
@@ -29,6 +31,8 @@ from ragu.common.prompts.default_templates import (
     DEFAULT_RAGU_LM_ENTITY_NORMALIZATION_PROMPT,
     DEFAULT_RAGU_LM_ENTITY_DESCRIPTION_PROMPT,
     DEFAULT_RAGU_LM_RELATION_DESCRIPTION_PROMPT,
+    DEFAULT_QUERY_DECOMPOSITION_PROMPT,
+    DEFAULT_QUERY_REWRITE_PROMPT,
 )
 
 
@@ -165,5 +169,15 @@ DEFAULT_PROMPT_TEMPLATES = {
     "ragu_lm_relation_description": PromptTemplate(
         template=DEFAULT_RAGU_LM_RELATION_DESCRIPTION_PROMPT,
         description="Instruction for RAGU-lm relation description stage."
+    ),
+    "query_decomposition": PromptTemplate(
+        template=DEFAULT_QUERY_DECOMPOSITION_PROMPT,
+        schema=QueryPlan,
+        description="Prompt for decomposing a complex query into atomic subqueries with dependencies."
+    ),
+    "query_rewrite": PromptTemplate(
+        template=DEFAULT_QUERY_REWRITE_PROMPT,
+        schema=RewriteQuery,
+        description="Prompt for rewriting a subquery using answers from its dependencies."
     ),
 }

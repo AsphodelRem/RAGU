@@ -40,6 +40,10 @@ Validate correctness and completeness of entities and relationships against the 
 2. Add missing relationships with descriptions and strength.
 3. Return full updated lists.
 
+{% if entity_types -%}
+The entity type must be one of the following: {{ entity_types }}
+{% endif %} 
+
 Triplets for validation:
 {{ artifacts }}
 
@@ -175,4 +179,56 @@ DEFAULT_RAGU_LM_RELATION_DESCRIPTION_PROMPT = """
 Вторая именованная сущность: {{ second_normalized_entity }}
 Текст: {{ source_text }}
 Смысл отношения между двумя именованными сущностями:
+"""
+
+DEFAULT_QUERY_DECOMPOSITION_PROMPT = """
+**Goal**
+You are a Query Planning agent for a Retrieval-Augmented Generation (RAG) system.
+
+Your task is to analyze a user's natural-language query and convert it into a structured query plan.
+
+**Instructions**
+1. Decompose the original query into a set of minimal, atomic subqueries.
+   - Each subquery should represent a single information need.
+   - Subqueries should be as independent as possible.
+2. Identify dependencies between subqueries.
+   - If a subquery requires the result of another subquery, explicitly specify this dependency.
+   - Dependencies must form a directed acyclic graph (DAG).
+3. Assign each subquery a unique identifier.
+4. Optionally classify each subquery by its intent (e.g., factual lookup, comparison, aggregation, reasoning).
+
+**Rules**
+- Do NOT answer the query.
+- Do NOT invent information.
+- Do NOT merge unrelated information needs into one subquery.
+- If query does not consist of subqueries, return original query as only subquery.
+- Dependencies should be explicit and minimal.
+
+Query to decompose: {{ query }}
+
+Output only valid JSON that strictly conforms to the provided schema.
+"""
+
+DEFAULT_QUERY_REWRITE_PROMPT = """
+**Goal**
+You are a query rewriting assistant for a Retrieval-Augmented Generation (RAG) system.
+
+Your task is to rewrite a subquery so that it becomes fully explicit and self-contained,
+using the answers to its dependency subqueries.
+
+**Rules**
+- Preserve the original intent of the subquery.
+- Resolve all references (pronouns, placeholders, implicit entities).
+- Do NOT add new information.
+- Do NOT answer the question.
+- Output only the rewritten query as plain text.
+
+Original subquery:
+{{ original_query }}
+
+Dependency answers:
+{% for dep_id in context -%}
+{{ dep_id }}: {{ context[dep_id] }}
+{% endfor %}
+Rewrite the subquery and return the result as valid JSON matching the provided schema.
 """

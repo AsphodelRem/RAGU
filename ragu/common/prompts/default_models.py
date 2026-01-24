@@ -35,7 +35,7 @@ in producing well-structured, interpretable results.
 """
 
 import logging
-from typing import List
+from typing import List, Optional, Literal
 
 from pydantic import (
     BaseModel,
@@ -86,6 +86,20 @@ class ArtifactsModel(BaseModel):
         return self
 
 
+class EntitiesExtractionModel(BaseModel):
+    entities: List[EntityModel] = Field(
+        default_factory=list,
+        description="List of entities extracted from text"
+    )
+
+
+class RelationsExtractionModel(BaseModel):
+    relations: List[RelationModel] = Field(
+        default_factory=list,
+        description="List of relationships between provided entities"
+    )
+
+
 class CommunityFindingModel(BaseModel):
     summary: str = Field(..., description="Short description of the finding")
     explanation: str = Field(..., description="Detailed explanation (several paragraphs based on the data)")
@@ -130,3 +144,29 @@ class RelationDescriptionModel(BaseModel):
 
 class ClusterSummarizationModel(BaseModel):
     content: str = Field(description="Summarized content of the cluster")
+
+class SubQuery(BaseModel):
+    id: str = Field(..., description="Unique identifier of the subquery, e.g. 'q1', 'q2'")
+    query: str = Field(..., description="Natural language formulation of the atomic subquery")
+    depends_on: List[str] = Field(
+        default_factory=list,
+        description="List of subquery IDs that must be resolved before this one"
+    )
+    intent: Optional[Literal[
+        "lookup",
+        "definition",
+        "comparison",
+        "aggregation",
+        "reasoning",
+        "filtering",
+        "other"
+    ]] = Field(
+        default=None,
+        description="Optional classification of the subquery intent"
+    )
+
+class QueryPlan(BaseModel):
+    subqueries: List[SubQuery] = Field(..., description="List of decomposed subqueries forming a DAG")
+
+class RewriteQuery(BaseModel):
+    query: str = Field(..., description="Rewritten query that is self-contained and explicit")
