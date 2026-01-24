@@ -2,6 +2,7 @@ from typing import Optional, List
 
 from ragu.chunker.types import Chunk
 from ragu.embedder.base_embedder import BaseEmbedder
+from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.llm.base_llm import BaseLLM
 from ragu.rerank.base_reranker import BaseReranker
 from ragu.search_engine.base_engine import BaseEngine
@@ -21,7 +22,7 @@ class NaiveSearchEngine(BaseEngine):
     def __init__(
         self,
         client: BaseLLM,
-        index: Index,
+        knowledge_graph: KnowledgeGraph,
         embedder: BaseEmbedder,
         reranker: Optional[BaseReranker] = None,
         max_context_length: int = 30_000,
@@ -34,7 +35,7 @@ class NaiveSearchEngine(BaseEngine):
         Initialize a `NaiveSearchEngine`.
 
         :param client: Language model client for generation.
-        :param index: Index containing chunk vector database and KV storage.
+        :param knowledge_graph: Knowledge graph containing chunk vector database and KV storage.
         :param embedder: Embedding model for similarity search.
         :param reranker: Optional reranker for improving retrieval quality.
         :param max_context_length: Maximum number of tokens allowed in the truncated context.
@@ -50,7 +51,7 @@ class NaiveSearchEngine(BaseEngine):
             max_context_length
         )
 
-        self.index = index
+        self.graph = knowledge_graph
         self.embedder = embedder
         self.reranker = reranker
         self.client = client
@@ -72,7 +73,7 @@ class NaiveSearchEngine(BaseEngine):
                              If None, returns all reranked chunks. Only used if reranker is set.
         :return: A :class:`NaiveSearchResult` object containing chunks and scores.
         """
-        results = await self.index.chunk_vector_db.query(query, top_k=top_k)
+        results = await self.graph.index.chunk_vector_db.query(query, top_k=top_k)
 
         if not results:
             return NaiveSearchResult(chunks=[], scores=[], documents_id=[])
@@ -80,7 +81,7 @@ class NaiveSearchEngine(BaseEngine):
         chunk_ids = [r["__id__"] for r in results]
         distances = [r.get("distance", 0.0) for r in results]
 
-        chunk_data_list = await self.index.chunks_kv_storage.get_by_ids(chunk_ids)
+        chunk_data_list = await self.graph.index.chunks_kv_storage.get_by_ids(chunk_ids)
 
         chunks: List[Chunk] = []
         valid_distances: List[float] = []
