@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from ragu.common.global_parameters import DEFAULT_FILENAMES, Settings
 from ragu.common.logger import logger
+from ragu.common.prompts import ChatMessages
 from ragu.utils.ragu_utils import compute_mdhash_id
 
 
@@ -19,13 +20,12 @@ class PendingRequest:
     Represents a request pending generation (not found in cache).
     """
     index: int
-    prompt: str
+    messages: ChatMessages
     cache_key: str
 
 
 def make_llm_cache_key(
-    prompt: str,
-    system_prompt: Optional[str] = None,
+    content: str,
     model_name: Optional[str] = None,
     schema: Optional[Type[BaseModel]] = None,
     kwargs: Optional[Dict[str, Any]] = None,
@@ -33,18 +33,12 @@ def make_llm_cache_key(
     """
     Build a deterministic cache key from LLM request parameters.
 
-    :param prompt: The user prompt.
-    :param system_prompt: Optional system prompt.
     :param model_name: Model name used for generation.
     :param schema: Optional Pydantic schema class.
     :param kwargs: Additional API parameters.
     :return: A unique cache key string.
     """
-    key_parts = []
-
-    if system_prompt:
-        key_parts.append(f"[system]: {system_prompt}")
-    key_parts.append(f"[user]: {prompt}")
+    key_parts = [content]
 
     if model_name:
         key_parts.append(f"[model]: {model_name}")
@@ -121,7 +115,7 @@ class TextCache:
             return
 
         try:
-            with self._cache_path.open("r", encoding="utf-16") as f:
+            with self._cache_path.open("r", encoding="utf-8") as f:
                 cache = json.load(f)
                 if isinstance(cache, dict):
                     self._mem_cache = cache
@@ -156,7 +150,7 @@ class TextCache:
         """
         Write cache to file.
         """
-        with path.open("w", encoding="utf-16") as f:
+        with path.open("w", encoding="utf-8") as f:
             json.dump(self._mem_cache, f, ensure_ascii=False, indent=2)
 
     async def get(
