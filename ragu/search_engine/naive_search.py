@@ -1,14 +1,17 @@
 from typing import Optional, List
 
 from ragu.chunker.types import Chunk
+from ragu.common.global_parameters import Settings
 from ragu.embedder.base_embedder import BaseEmbedder
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.llm.base_llm import BaseLLM
 from ragu.rerank.base_reranker import BaseReranker
 from ragu.search_engine.base_engine import BaseEngine
 from ragu.search_engine.types import NaiveSearchResult
-from ragu.storage.index import Index
 from ragu.utils.token_truncation import TokenTruncation
+
+from ragu.common.prompts.prompt_storage import RAGUInstruction
+from ragu.common.prompts.messages import ChatMessages, render
 
 
 class NaiveSearchEngine(BaseEngine):
@@ -28,33 +31,36 @@ class NaiveSearchEngine(BaseEngine):
         max_context_length: int = 30_000,
         tokenizer_backend: str = "tiktoken",
         tokenizer_model: str = "gpt-4",
+        language: str | None = None,
         *args,
         **kwargs
     ):
         """
         Initialize a `NaiveSearchEngine`.
 
-        :param client: Language model client for generation.
-        :param knowledge_graph: Knowledge graph containing chunk vector database and KV storage.
-        :param embedder: Embedding model for similarity search.
-        :param reranker: Optional reranker for improving retrieval quality.
-        :param max_context_length: Maximum number of tokens allowed in the truncated context.
-        :param tokenizer_backend: Tokenizer backend to use (e.g. ``tiktoken``).
-        :param tokenizer_model: Model name used for token counting and truncation.
+        :param client: LLM client used to generate the final answer.
+        :param knowledge_graph: Knowledge graph containing chunk vector DB and chunk KV storage.
+        :param embedder: Embedding model (kept for interface parity; retrieval uses graph index DBs).
+        :param reranker: Optional reranker used to improve ranking of retrieved chunks.
+        :param max_context_length: Max tokens allowed for context after truncation.
+        :param tokenizer_backend: Tokenizer backend used for token truncation.
+        :param tokenizer_model: Model name used by the tokenizer backend.
+        :param language: Default output language
         """
         _PROMPTS_NAMES = ["naive_search"]
-        super().__init__(prompts=_PROMPTS_NAMES, *args, **kwargs)
+        super().__init__(client=client, prompts=_PROMPTS_NAMES, *args, **kwargs)
 
         self.truncation = TokenTruncation(
             tokenizer_model,
             tokenizer_backend,
-            max_context_length
+            max_context_length,
         )
 
         self.graph = knowledge_graph
         self.embedder = embedder
         self.reranker = reranker
         self.client = client
+        self.language = language if language else Settings.language
 
     async def a_search(
         self,
@@ -67,11 +73,11 @@ class NaiveSearchEngine(BaseEngine):
         """
         Perform a naive vector search over chunks.
 
-        :param query: The input text query to search for.
-        :param top_k: Number of top chunks to retrieve initially (default: 20).
-        :param rerank_top_k: Number of chunks to return after reranking.
-                             If None, returns all reranked chunks. Only used if reranker is set.
-        :return: A :class:`NaiveSearchResult` object containing chunks and scores.
+        :param query: Input query string.
+        :param top_k: Number of top chunks to retrieve initially.
+        :param rerank_top_k: Number of chunks to keep after reranking.
+                             If None, keeps all reranked chunks. Used only when reranker is set.
+        :return: NaiveSearchResult with retrieved chunks, scores, and document ids.
         """
         results = await self.graph.index.chunk_vector_db.query(query, top_k=top_k)
 
@@ -115,13 +121,12 @@ class NaiveSearchEngine(BaseEngine):
                 chunks = chunks[:rerank_top_k]
                 scores = scores[:rerank_top_k]
 
-        # Collect document IDs
-        documents_id = list(set(c.doc_id for c in chunks if c.doc_id))
+        documents_id = list({c.doc_id for c in chunks if c.doc_id})
 
         return NaiveSearchResult(
             chunks=chunks,
             scores=scores,
-            documents_id=documents_id
+            documents_id=documents_id,
         )
 
     async def a_query(self, query: str, top_k: int = 20, rerank_top_k: Optional[int] = None) -> str:
@@ -136,9 +141,19 @@ class NaiveSearchEngine(BaseEngine):
         context: NaiveSearchResult = await self.a_search(query, top_k, rerank_top_k)
         truncated_context: str = self.truncation(str(context))
 
-        prompt, schema = self.get_prompt("naive_search").get_instruction(
+        instruction: RAGUInstruction = self.get_prompt("naive_search")
+
+        rendered_list: List[ChatMessages] = render(
+            instruction.messages,
             query=query,
-            context=truncated_context
+            context=truncated_context,
+            language=self.language,
+        )
+        rendered: ChatMessages = rendered_list[0]
+
+        result = await self.client.generate(
+            conversations=[rendered],
+            response_model=instruction.pydantic_model,
         )
 
-        return await self.client.generate(prompt=prompt, schema=schema)
+        return result.response if hasattr(result, "response") else str(result)

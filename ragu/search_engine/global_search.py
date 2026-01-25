@@ -4,11 +4,15 @@ from typing import List
 from pydantic import BaseModel
 
 from ragu.common.base import RaguGenerativeModule
+from ragu.common.global_parameters import Settings
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.llm.base_llm import BaseLLM
 from ragu.search_engine.base_engine import BaseEngine
 from ragu.search_engine.types import GlobalSearchResult
 from ragu.utils.token_truncation import TokenTruncation
+
+from ragu.common.prompts.prompt_storage import RAGUInstruction
+from ragu.common.prompts.messages import ChatMessages, render
 
 
 class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
@@ -27,8 +31,9 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         max_context_length: int = 30_000,
         tokenizer_backend: str = "tiktoken",
         tokenizer_model: str = "gpt-4",
+        language: str | None = None,
         *args,
-        **kwargs
+        **kwargs,
     ):
         """
         Initialize a new `GlobalSearchEngine`.
@@ -40,14 +45,16 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         :param tokenizer_model: Model name for tokenizer calibration (default: ``"gpt-4"``).
         """
         _PROMPTS = ["global_search_context", "global_search"]
-        super().__init__(prompts=_PROMPTS, *args, **kwargs)
+        super().__init__(client=client, prompts=_PROMPTS, *args, **kwargs)
 
-        self.knowledge_graph = knowledge_graph
         self.client = client
+        self.knowledge_graph = knowledge_graph
+        self.language = language if language else Settings.language
+
         self.truncation = TokenTruncation(
             tokenizer_model,
             tokenizer_backend,
-            max_context_length
+            max_context_length,
         )
 
     async def a_search(self, query: str, *args, **kwargs) -> GlobalSearchResult:
@@ -66,12 +73,12 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
             self.knowledge_graph.index.community_summary_kv_storage.get_by_id(community_cluster_id)
             for community_cluster_id in await self.knowledge_graph.index.communities_kv_storage.all_keys()
         ])
-        communities = list(filter(lambda x: x is not None, communities))
+        communities = [c for c in communities if c is not None]
 
         responses = await self.get_meta_responses(query, communities)
 
-        responses: list[dict] = list(filter(lambda x: int(x.get("rating", 0)) > 0, responses))
-        responses: list[dict] = sorted(responses, key=lambda x: int(x.get("rating", 0)), reverse=True)
+        responses = [r for r in responses if int(r.get("rating", 0)) > 0]
+        responses = sorted(responses, key=lambda x: int(x.get("rating", 0)), reverse=True)
 
         return GlobalSearchResult(responses)
 
@@ -87,19 +94,23 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         :param context: A list of community summary texts to evaluate.
         :return: A list of structured responses with fields such as ``response`` and ``rating``.
         """
-        prompts, schema = self.get_prompt("global_search_context").get_instruction(
+        instruction: RAGUInstruction = self.get_prompt("global_search_context")
+
+        rendered_list: List[ChatMessages] = render(
+            instruction.messages,
             query=query,
-            context=context
+            context=context,
+            language=self.language,
         )
 
         meta_responses = await self.client.generate(
-            prompt=prompts,
-            schema=schema
+            conversations=rendered_list,
+            response_model=instruction.pydantic_model,
         )
 
-        return [response.model_dump() for response in meta_responses if response]
+        return [r.model_dump() for r in meta_responses if r]
 
-    async def a_query(self, query: str) -> BaseModel:
+    async def a_query(self, query: str) -> str:
         """
         Execute a full global retrieval-augmented generation query.
 
@@ -112,12 +123,19 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         context = await self.a_search(query)
         truncated_context: str = self.truncation(str(context))
 
-        prompts, schema = self.get_prompt("global_search").get_instruction(
+        instruction: RAGUInstruction = self.get_prompt("global_search")
+
+        rendered_list: List[ChatMessages] = render(
+            instruction.messages,
             query=query,
-            context=truncated_context
+            context=truncated_context,
+            language=self.language,
+        )
+        rendered = rendered_list[0]
+
+        result =  await self.client.generate(
+            conversations=[rendered],
+            response_model=instruction.pydantic_model,
         )
 
-        return await self.client.generate(
-            prompt=prompts,
-            schema=schema
-        )
+        return result[0].response if hasattr(result, "response") else result

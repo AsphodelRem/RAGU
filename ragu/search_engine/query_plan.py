@@ -4,20 +4,28 @@ from ragu.common.prompts.default_models import SubQuery
 from ragu.search_engine.base_engine import BaseEngine
 from ragu.search_engine.search_functional import _topological_sort
 
+from ragu.common.prompts.prompt_storage import RAGUInstruction
+from ragu.common.prompts.messages import ChatMessages, render
+
 
 class QueryPlanEngine(BaseEngine):
     """
-    A query planning engine that decomposes complex queries into subqueries.
+    Query planning engine that decomposes complex queries into a DAG of subqueries
+    and executes them in topological order.
 
-    It analyzes the input query, breaks it down into a dependency graph of simpler
-    subqueries, executes them in topological order, and combines results to produce
-    a final answer.
-
-    :param engine: The base search engine used to execute individual subqueries.
+    Pipeline:
+      1. Decompose query -> list[SubQuery] (DAG)
+      2. Topological sort
+      3. For each subquery:
+         - rewrite using dependency answers (if needed)
+         - execute with underlying engine
+         - store answer in context
+      4. Return answer of the last subquery
     """
-    def __init__(self, engine, *args, **kwargs):
+
+    def __init__(self, engine: BaseEngine, *args, **kwargs):
         _PROMPTS_NAMES = ["query_decomposition", "query_rewrite"]
-        super().__init__(prompts=_PROMPTS_NAMES, *args, **kwargs)
+        super().__init__(client=engine.client, prompts=_PROMPTS_NAMES, *args, **kwargs)
         self.engine: BaseEngine = engine
 
     async def process_query(self, query: str) -> List[SubQuery]:
@@ -28,39 +36,59 @@ class QueryPlanEngine(BaseEngine):
         independent subqueries. Each subquery is assigned a unique ID and may
         declare dependencies on other subqueries that must be resolved first.
 
-        :param query: The complex natural-language query to decompose.
-        :return: List of :class:`SubQuery` objects forming a directed acyclic graph (DAG).
+        :param query: Complex natural-language query to decompose.
+        :return: List of SubQuery objects forming a DAG.
         """
-        prompt, schema = self.get_prompt("query_decomposition").get_instruction(
-            query=query
+        instruction: RAGUInstruction = self.get_prompt("query_decomposition")
+
+        rendered_list: List[ChatMessages] = render(
+            instruction.messages,
+            query=query,
         )
+        rendered = rendered_list[0]
 
         response = await self.engine.client.generate(
-            prompt=prompt,
-            schema=schema
+            conversations=[rendered],
+            response_model=instruction.pydantic_model,
         )
-        print(response[0].subqueries)
+
         return response[0].subqueries
 
     async def _rewrite_subquery(self, subquery: SubQuery, context: Dict[str, str]) -> str:
         """
-        Rewrites a subquery using answers of its dependencies.
+        Rewrite a subquery by injecting answers from its dependency subqueries.
+
+        Only dependency answers listed in `subquery.depends_on` are provided
+        to the rewrite prompt.
+
+        :param subquery: The subquery to rewrite.
+        :param context: Mapping of {subquery_id -> answer} accumulated so far.
+        :return: Rewritten, self-contained query string.
         """
-        context = {k: v for k, v in context.items() if k in subquery.depends_on}
-        prompt, schema = self.get_prompt("query_rewrite").get_instruction(
+        dep_context = {k: v for k, v in context.items() if k in subquery.depends_on}
+
+        instruction: RAGUInstruction = self.get_prompt("query_rewrite")
+        rendered_list: List[ChatMessages] = render(
+            instruction.messages,
             original_query=subquery.query,
-            context=context
+            context=dep_context,
         )
+        rendered = rendered_list[0]
+
         response = await self.engine.client.generate(
-            prompt=prompt,
-            schema=schema
+            conversations=[rendered],
+            response_model=instruction.pydantic_model,
         )
-        return response[0].query.strip()
+
+        return response[0].query if hasattr(response[0], "query") else response
 
     async def _answer_subquery(self, subquery: SubQuery, context: Dict[str, str]) -> str:
         """
-        Executes a single subquery.
-        Injects answers of dependencies into the prompt.
+        Execute a single subquery, rewriting it first if it has dependencies.
+
+        :param subquery: The subquery to execute.
+        :param context: Mapping of {subquery_id -> answer} for dependency injection.
+        :return: Answer string for this subquery.
         """
         if subquery.depends_on:
             query = await self._rewrite_subquery(subquery, context)
@@ -68,7 +96,8 @@ class QueryPlanEngine(BaseEngine):
             query = subquery.query
 
         result = await self.engine.a_query(query)
-        return result[0].model_dump().get("response")
+
+        return result
 
     async def a_query(self, query: str) -> str:
         """
@@ -90,7 +119,6 @@ class QueryPlanEngine(BaseEngine):
         ordered = _topological_sort(subqueries)
 
         context: Dict[str, str] = {}
-
         for subquery in ordered:
             answer = await self._answer_subquery(subquery, context)
             context[subquery.id] = answer
@@ -107,5 +135,3 @@ class QueryPlanEngine(BaseEngine):
         :return: Search results from the underlying engine.
         """
         return await self.engine.a_search(query, *args, **kwargs)
-
-
