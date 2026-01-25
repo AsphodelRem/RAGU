@@ -62,6 +62,9 @@ class Entity:
                 prefix="ent-"
             )
 
+    def __eq__(self, other):
+        return self.id == other.id
+
 
 @dataclass(slots=True)
 class EntityEmbedding:
@@ -73,8 +76,8 @@ class EntityEmbedding:
     :param description_embedding: Embedding vector for the entity description.
     """
     id: str
-    name_embedding: np.ndarray = None
-    description_embedding: np.ndarray = None,
+    name_embedding: np.ndarray | None = None
+    description_embedding: np.ndarray | None = None,
 
 
 @dataclass(slots=True)
@@ -109,6 +112,8 @@ class Relation:
                 content=(self.subject_id + " -> " + self.object_id),
                 prefix="rel-"
             )
+    def __eq__(self, other):
+        return self.id == other.id
 
 
 @dataclass(slots=True)
@@ -120,7 +125,7 @@ class RelationEmbedding:
     :param embedding: Embedding vector capturing the relation’s semantic meaning.
     """
     id: str
-    embedding: np.ndarray = None,
+    embedding: np.ndarray | None = None,
 
 
 @dataclass(slots=True)
@@ -150,7 +155,11 @@ class Community:
                 prefix="com-"
             )
 
+    def __eq__(self, other):
+        return self.id == other.id
 
+
+# TODO: creates summary ID from community level and cluster ID
 @dataclass(slots=True)
 class CommunitySummary:
     """

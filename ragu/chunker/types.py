@@ -9,7 +9,7 @@ class Chunk:
     content: str
     chunk_order_idx: int
     doc_id: str
-    num_tokens: int=None
+    num_tokens: int | None = None
 
     def __post_init__(self):
         self.id = compute_mdhash_id(content=self.content, prefix="chunk-")

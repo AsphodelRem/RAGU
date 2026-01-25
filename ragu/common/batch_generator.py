@@ -1,5 +1,5 @@
 import math
-from typing import Any, Generator, Iterable, List, Sized
+from typing import Generator, List
 
 
 class BatchGenerator:
@@ -7,7 +7,7 @@ class BatchGenerator:
     A utility class for generating batches of data.
     """
 
-    def __init__(self, data: Iterable[Any] | Sized, batch_size: int):
+    def __init__(self, data: List, batch_size: int):
         """
         Initializes the BatchGenerator.
 
