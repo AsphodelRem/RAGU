@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from textwrap import dedent
 
 from jinja2 import Template
 
@@ -11,32 +12,32 @@ class LocalSearchResult:
     chunks: list=field(default_factory=list)
     documents_id: list[str]=field(default_factory=list)
 
-    _template: Template = Template(
-"""
-**Entities**\nEntity, entity type, entity description
-{%- for e in entities %}
-{{ e.entity_name }}, {{ e.entity_type }}, {{ e.description }}
-{%- endfor %}
-
-**Relations**\nSubject, object, relation description, rank
-{%- for r in relations %}
-{{ r.subject_name }}, {{ r.object_name }}, {{ r.description }}, {{ r.rank }}
-{%- endfor %}
-
-{%- if summaries %}
-Summary
-{%- for s in summaries %}
-{{ s }}
-{%- endfor %}
-{% endif %}
-
-{%- if chunks %}
-Chunks
-{%- for c in chunks %}
-{{ c.content }}
-{%- endfor %}
-{% endif %}
-"""
+    _template: Template = Template(dedent(
+        """
+        **Entities**\nEntity, entity type, entity description
+        {%- for e in entities %}
+        {{ e.entity_name }}, {{ e.entity_type }}, {{ e.description }}
+        {%- endfor %}
+        
+        **Relations**\nSubject, object, relation description, rank
+        {%- for r in relations %}
+        {{ r.subject_name }}, {{ r.object_name }}, {{ r.description }}, {{ r.rank }}
+        {%- endfor %}
+        
+        {%- if summaries %}
+        **Summary**
+        {%- for s in summaries %}
+        {{ s }}
+        {%- endfor %}
+        {% endif %}
+        
+        {%- if chunks %}
+        **Chunks**
+        {%- for c in chunks %}
+        {{ c.content }}
+        {%- endfor %}
+        {% endif %}
+        """)
     )
 
     def __str__(self) -> str:
@@ -52,12 +53,12 @@ Chunks
 class GlobalSearchResult:
     insights: list=field(default_factory=list)
 
-    _template: Template = Template(
+    _template: Template = Template(dedent(
         """
         {%- for insight in insights %}
         {{ loop.index}}. Insight: {{ insight.response }}, rating: {{ insight.rating }}
         {%- endfor %}
-        """.strip()
+        """)
     )
 
     def __str__(self) -> str:
@@ -70,14 +71,14 @@ class NaiveSearchResult:
     scores: list=field(default_factory=list)
     documents_id: list[str]=field(default_factory=list)
 
-    _template: Template = Template(
-"""
-**Retrieved Chunks**
-{%- for chunk, score in zip(chunks, scores) %}
-[{{ loop.index }}] (score: {{ "%.3f"|format(score) }})
-{{ chunk.content }}
-{%- endfor %}
-"""
+    _template: Template = Template(dedent(
+        """
+        **Retrieved Chunks**
+        {%- for chunk, score in zip(chunks, scores) %}
+        [{{ loop.index }}] (score: {{ "%.3f"|format(score) }})
+        {{ chunk.content }}
+        {%- endfor %}
+        """)
     )
 
     def __str__(self) -> str:
