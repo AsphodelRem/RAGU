@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import Tuple, List, Iterable
 
-from ragu.common.prompts import PromptTemplate
+
 from ragu.chunker.types import Chunk
+from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.graph.types import Entity, Relation
 from ragu.common.base import RaguGenerativeModule
 
@@ -16,7 +17,7 @@ class BaseArtifactExtractor(RaguGenerativeModule, ABC):
     method to transform raw text chunks into structured graph entities and relations.
     """
 
-    def __init__(self, prompts: list[str] | dict[str, PromptTemplate]) -> None:
+    def __init__(self, prompts: list[str] | dict[str, RAGUInstruction]) -> None:
         """
         Initialize a new :class:`BaseArtifactExtractor`.
 

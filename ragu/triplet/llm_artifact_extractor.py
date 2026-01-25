@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from typing import List, Tuple, Optional, Iterable
+from typing import List, Tuple, Optional
 
 from ragu.chunker.types import Chunk
 from ragu.common.global_parameters import Settings
+from ragu.common.prompts.prompt_storage import RAGUInstruction
+from ragu.common.prompts.messages import ChatMessages, render
 from ragu.graph.types import Entity, Relation
 from ragu.llm.base_llm import BaseLLM
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
@@ -14,9 +16,11 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
     """
     Extracts entities and relations from text chunks using LLM.
 
-    The class implements an LLM-driven pipeline for artifact extraction:
-    - Extract entities and relations from raw texts.
-    - Optionally performs LLM-based validation to refine the extracted artifacts.
+    Pipeline:
+      1. Render the `artifact_extraction` instruction in batch mode over chunk texts.
+      2. Call the LLM to produce structured artifacts for each chunk.
+      3. Optionally render and run `artifact_validation` to refine extracted artifacts.
+      4. Convert model outputs into Entity/Relation objects, preserving source chunk ids.
     """
 
     def __init__(
@@ -25,14 +29,14 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
         do_validation: bool = False,
         language: str | None = None,
         entity_types: Optional[List[str]] = NEREL_ENTITY_TYPES,
-        relation_types: Optional[List[str]] = None
+        relation_types: Optional[List[str]] = None,
     ):
         """
         Initialize a new :class:`ArtifactsExtractorLLM`.
 
         :param client: Language model client for generation and validation.
         :param do_validation: Whether to perform additional LLM-based validation of artifacts.
-        :param language: Input text language (used for prompt conditioning).
+        :param language: Output text language.
         :param entity_types: List of entity types to guide extraction prompts.
         :param relation_types: List of relation types to guide extraction prompts.
         """
@@ -45,94 +49,109 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
         self.entity_types = ", ".join(entity_types) if entity_types else None
         self.relation_types = ", ".join(relation_types) if relation_types else None
 
-    async def extract(self, chunks: Iterable[Chunk], *args, **kwargs) -> Tuple[List[Entity], List[Relation]]:
+    async def extract(self, chunks: List[Chunk], *args, **kwargs) -> Tuple[List[Entity], List[Relation]]:
         """
-        Extract entities and relations from a collection of text chunks.
+        Extract entities and relations from a collection of chunks.
 
-        The method performs two sequential steps:
-        1. **Extraction:** Extract entities and relations from each chunk/
-        2. **Validation (optional):** Refine extracted artifacts..
+        Steps:
+          1) Batch-render the extraction prompt with `context=<chunk_texts>`,
+          2) Generate structured artifacts per chunk,
+          3) Optionally validate artifacts against the original context,
+          4) Convert artifacts into Entity/Relation objects.
 
-        For each chunk, entities and relations are created as :class:`Entity` and :class:`Relation`
-        objects, preserving source metadata (chunk IDs).
-
-        :param chunks: Iterable of :class:`Chunk` objects containing text content.
-        :param args: Additional positional arguments (ignored by default).
-        :param kwargs: Additional keyword arguments (ignored by default).
-        :return: A tuple ``(entities, relations)`` with all extracted artifacts.
+        :param chunks: Iterable of Chunk objects.
+        :return: (entities, relations) extracted from all chunks.
         """
-        entities_result, relations_result = [], []
 
-        context = [chunk.content for chunk in chunks]
-        prompts, schema = self.get_prompt("artifact_extraction").get_instruction(
+        entities_result: List[Entity] = []
+        relations_result: List[Relation] = []
+
+        context: List[str] = [chunk.content for chunk in chunks]
+
+        extraction_instruction: RAGUInstruction = self.get_prompt("artifact_extraction")
+        extraction_conversations: List[ChatMessages] = render(
+            extraction_instruction.messages,
             context=context,
             language=self.language,
-            entity_types=self.entity_types
+            entity_types=self.entity_types,
+            relation_types=self.relation_types,
         )
 
         result_list = await self.client.generate(
-            prompt=prompts,
-            schema=schema,
+            conversations=extraction_conversations,
+            response_model=extraction_instruction.pydantic_model,
             progress_bar_desc="Extracting a knowledge graph from chunks",
         )
 
         if self.do_validation:
-            prompts, schema = self.get_prompt("artifact_validation").get_instruction(
+            validation_instruction: RAGUInstruction = self.get_prompt("artifact_validation")
+
+            validation_conversations: List[ChatMessages] = render(
+                validation_instruction.messages,
                 artifacts=result_list,
                 context=context,
                 entity_types=self.entity_types,
-                language=self.language
+                relation_types=self.relation_types,
+                language=self.language,
             )
 
             result_list = await self.client.generate(
-                prompt=prompts,
-                schema=schema,
+                conversations=validation_conversations,
+                response_model=validation_instruction.pydantic_model,
                 progress_bar_desc="Validation of extracted artifacts",
             )
 
-        result_list = list(filter(lambda x: x is not None and not isinstance(x, Exception), result_list))
+        result_list = [x for x in result_list if x is not None and not isinstance(x, Exception)]
 
         for artifacts, chunk in zip(result_list, chunks):
-            current_chunk_entities = []
+            current_chunk_entities: List[Entity] = []
 
             # Parse entities
             for result in artifacts.model_dump().get("entities", []):
-                if result is not None:
-                    entity = Entity(
-                        entity_name=result.get("entity_name", ""),
-                        entity_type=result.get("entity_type", ""),
-                        description=result.get("description", ""),
-                        source_chunk_id=[chunk.id],
-                        documents_id=[],
-                        clusters=[],
-                    )
-                    current_chunk_entities.append(entity)
+                if result is None:
+                    continue
+                entity = Entity(
+                    entity_name=result.get("entity_name", ""),
+                    entity_type=result.get("entity_type", ""),
+                    description=result.get("description", ""),
+                    source_chunk_id=[chunk.id],
+                    documents_id=[],
+                    clusters=[],
+                )
+                current_chunk_entities.append(entity)
+
             entities_result.extend(current_chunk_entities)
 
             # Parse relations
             for result in artifacts.model_dump().get("relations", []):
-                if result is not None:
-                    subject_name = result.get("source_entity", "")
-                    object_name = result.get("target_entity", "")
+                if result is None:
+                    continue
 
-                    if subject_name and object_name:
-                        subject_entity = next(
-                            (e for e in current_chunk_entities if e.entity_name == subject_name), None
-                        )
-                        object_entity = next(
-                            (e for e in current_chunk_entities if e.entity_name == object_name), None
-                        )
+                subject_name = result.get("source_entity", "")
+                object_name = result.get("target_entity", "")
 
-                        if subject_entity and object_entity:
-                            relation = Relation(
-                                subject_name=subject_name,
-                                object_name=object_name,
-                                subject_id=subject_entity.id,
-                                object_id=object_entity.id,
-                                description=result.get("description", ""),
-                                relation_strength=result.get("relation_strength", 1.0),
-                                source_chunk_id=[chunk.id],
-                            )
-                            relations_result.append(relation)
+                if not (subject_name and object_name):
+                    continue
+
+                subject_entity = next(
+                    (e for e in current_chunk_entities if e.entity_name == subject_name),
+                    None,
+                )
+                object_entity = next(
+                    (e for e in current_chunk_entities if e.entity_name == object_name),
+                    None,
+                )
+
+                if subject_entity and object_entity:
+                    relation = Relation(
+                        subject_name=subject_name,
+                        object_name=object_name,
+                        subject_id=subject_entity.id,
+                        object_id=object_entity.id,
+                        description=result.get("description", ""),
+                        relation_strength=result.get("relation_strength", 1.0),
+                        source_chunk_id=[chunk.id],
+                    )
+                    relations_result.append(relation)
 
         return entities_result, relations_result
