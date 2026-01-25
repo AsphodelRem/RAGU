@@ -14,7 +14,8 @@ Classes
   perform LLM-driven generation or structured response tasks.
 """
 
-from ragu.common.prompts import PromptTemplate, DEFAULT_PROMPT_TEMPLATES
+from ragu.common.prompts import  DEFAULT_PROMPT_TEMPLATES
+from ragu.common.prompts.prompt_storage import RAGUInstruction
 
 
 class RaguGenerativeModule:
@@ -26,26 +27,26 @@ class RaguGenerativeModule:
     :class:`PromptTemplate` instances directly.
     """
 
-    def __init__(self, prompts: list[str] | dict[str, PromptTemplate]):
+    def __init__(self, prompts: list[str] | dict[str, RAGUInstruction]):
         """
         Initialize the generative module with one or more prompts.
 
         :param prompts: Either a list of prompt names (loaded from
                         :data:`DEFAULT_PROMPT_TEMPLATES`) or a dictionary
-                        mapping prompt names to :class:`PromptTemplate` objects.
+                        mapping prompt names to :class:`ChatTemplate` objects.
         :raises ValueError: If the input format is neither list nor dict.
         """
         super().__init__()
 
         if isinstance(prompts, list):
-            self.prompts: dict[str, PromptTemplate] = {
+            self.prompts: dict[str, RAGUInstruction] = {
                 prompt_name: DEFAULT_PROMPT_TEMPLATES.get(prompt_name) for prompt_name in prompts
             }
         elif isinstance(prompts, dict):
             self.prompts = prompts
         else:
             raise ValueError(
-                f"Prompts must be a list of prompt names or a dictionary of prompt names and PromptTemplate objects, "
+                f"Prompts must be a list of prompt names or a dictionary of prompt names and ChatTemplate objects, "
                 f"got {type(prompts)}"
             )
 
@@ -53,16 +54,16 @@ class RaguGenerativeModule:
         """
         Retrieve all prompt templates registered in the module.
 
-        :return: Dictionary mapping prompt names to :class:`PromptTemplate` objects.
+        :return: Dictionary mapping prompt names to :class:`ChatTemplate` objects.
         """
         return self.prompts
 
-    def get_prompt(self, prompt_name: str) -> PromptTemplate:
+    def get_prompt(self, prompt_name: str) -> RAGUInstruction:
         """
         Retrieve a specific prompt template by name.
 
         :param prompt_name: The name of the prompt to retrieve.
-        :return: The corresponding :class:`PromptTemplate` instance.
+        :return: The corresponding :class:`ChatTemplate` instance.
         :raises ValueError: If the prompt name is not found.
         """
         if prompt_name in self.prompts:
@@ -70,7 +71,7 @@ class RaguGenerativeModule:
         else:
             raise ValueError(f"Prompt {prompt_name} not found")
 
-    def update_prompt(self, prompt_name: str, prompt: PromptTemplate) -> None:
+    def update_prompt(self, prompt_name: str, prompt: RAGUInstruction) -> None:
         """
         Replace or add a prompt template in the module.
 
