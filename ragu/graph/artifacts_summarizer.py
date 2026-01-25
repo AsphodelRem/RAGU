@@ -3,9 +3,9 @@ from itertools import chain
 from typing import List, Any
 
 import pandas as pd
-from pandas.core.interchange.dataframe_protocol import DataFrame
 from sklearn.cluster import DBSCAN
 
+from ragu.common.global_parameters import Settings
 from ragu.common.base import RaguGenerativeModule
 from ragu.common.logger import logger
 from ragu.common.prompts.default_models import RelationDescriptionModel, EntityDescriptionModel
@@ -13,23 +13,26 @@ from ragu.embedder.base_embedder import BaseEmbedder
 from ragu.graph.types import Entity, Relation
 from ragu.llm.base_llm import BaseLLM
 
+from ragu.common.prompts.prompt_storage import RAGUInstruction
+from ragu.common.prompts.messages import ChatMessages, render
+
 
 class EntitySummarizer(RaguGenerativeModule):
     def __init__(
-            self,
-            client: BaseLLM = None,
-            use_llm_summarization: bool = True,
-            use_clustering: bool = False,
-            embedder: BaseEmbedder = None,
-            cluster_only_if_more_than: int = 128,
-            summarize_only_if_more_than: int = 5,
-            language: str = "russian"
+        self,
+        client: BaseLLM = None,
+        use_llm_summarization: bool = True,
+        use_clustering: bool = False,
+        embedder: BaseEmbedder = None,
+        cluster_only_if_more_than: int = 128,
+        summarize_only_if_more_than: int = 5,
+        language: str | None = None,
     ):
         _PROMPTS = ["entity_summarizer", "cluster_summarize"]
         super().__init__(prompts=_PROMPTS)
 
         self.client = client
-        self.language = language
+        self.language = language if language else Settings.language
         self.use_llm_summarization = use_llm_summarization
         self.summarize_only_if_more_than = summarize_only_if_more_than
 
@@ -51,23 +54,22 @@ class EntitySummarizer(RaguGenerativeModule):
 
         if self.use_clustering and not self.embedder:
             raise ValueError(
-                f"Clustering is enabled but no embedder is provided. Please provide an embedder."
+                "Clustering is enabled but no embedder is provided. Please provide an embedder."
             )
 
     async def run(self, entities: List[Entity]) -> Any:
         """
         Execute the full artifact summarization pipeline.
 
-        The pipeline performs the following steps:
+        Steps:
+          1. Group duplicated entities by (entity_name, entity_type),
+          2. Optionally cluster large description sets and summarize cluster-wise,
+          3. Optionally summarize entities with many duplicates via LLM,
+          4. Return updated list of Entity objects.
 
-        1. Group duplicated entities and relations into aggregated dataframes.
-        2. Summarize merged entity and relation descriptions if enabled.
-        3. Return the updated lists of :class:`Entity` and :class:`Relation` objects.
-
-        :param entities: List of extracted entities to summarize or merge.
-        :return: A tuple ``(entities, relations)`` containing updated objects.
+        :param entities: List of extracted entities.
+        :return: Summarized/deduplicated entities list.
         """
-
         if len(entities) == 0:
             logger.warning("Empty list of entities. Seems that something goes wrong.")
             return []
@@ -75,14 +77,16 @@ class EntitySummarizer(RaguGenerativeModule):
         grouped_entities_df = self.group_entities(entities)
 
         num_of_duplicated_entities = len(entities) - len(grouped_entities_df)
-        logger.info(f"Found {num_of_duplicated_entities} duplicated entities. "
-                    f"Number of unique entities: {len(grouped_entities_df)} ")
+        logger.info(
+            f"Found {num_of_duplicated_entities} duplicated entities. "
+            f"Number of unique entities: {len(grouped_entities_df)} "
+        )
 
         entities_to_return = await self.summarize_entities(grouped_entities_df)
 
         if len(entities_to_return) != len(grouped_entities_df):
             logger.warning(
-                f"{len(entities_to_return) -  len(grouped_entities_df)} from {len(grouped_entities_df)} entities"
+                f"{len(entities_to_return) - len(grouped_entities_df)} from {len(grouped_entities_df)} entities "
                 f"were missed during summarization."
             )
 
@@ -115,28 +119,30 @@ class EntitySummarizer(RaguGenerativeModule):
         if entity_multi_desc.empty:
             return [Entity(**row) for _, row in entity_single_desc.iterrows()]
 
-        entities_to_summarize = []
+        entities_to_summarize: List[Entity] = []
         if self.use_llm_summarization:
             entities_to_summarize = [Entity(**row) for _, row in entity_multi_desc.iterrows()]
-            prompt, schema = self.get_prompt("entity_summarizer").get_instruction(
+
+            instruction: RAGUInstruction = self.get_prompt("entity_summarizer")
+            rendered_list: List[ChatMessages] = render(
+                instruction.messages,
                 entity=entities_to_summarize,
                 language=self.language,
             )
-            response: List[EntityDescriptionModel] = await self.client.generate( # type: ignore
-                prompt=prompt,
-                schema=schema,
-                progress_bar_desc="Entity summarization"
+
+            response: List[EntityDescriptionModel] = await self.client.generate(  # type: ignore
+                conversations=rendered_list,
+                response_model=instruction.pydantic_model,
+                progress_bar_desc="Entity summarization",
             )
 
             for i, summary in enumerate(response):
                 if summary:
                     entities_to_summarize[i].description = summary.description
-
         else:
             entities_to_summarize = [Entity(**row) for _, row in entity_multi_desc.iterrows()]
 
         return [Entity(**row) for _, row in entity_single_desc.iterrows()] + entities_to_summarize
-
 
     @staticmethod
     def group_entities(entities: List[Entity]) -> pd.DataFrame:
@@ -162,30 +168,42 @@ class EntitySummarizer(RaguGenerativeModule):
         return grouped_entities
 
     async def _summarize_by_cluster_if_needed(self, descriptions: List[str]) -> str:
+        """
+        Optionally cluster a large set of descriptions and summarize each cluster via LLM.
+
+        If clustering is disabled or there are not enough descriptions, returns the
+        concatenation of descriptions.
+
+        :param descriptions: List of raw descriptions for one entity.
+        :return: A single merged (and optionally cluster-summarized) description string.
+        """
         if len(descriptions) > self.cluster_only_if_more_than and self.use_clustering:
             cluster = DBSCAN(eps=0.5, min_samples=2).fit(await self.embedder.embed(descriptions))
             labels = cluster.labels_
 
-            clusters = {}
+            clusters: dict[int, list[str]] = {}
             for label, text in zip(labels, descriptions):
-                if label not in clusters:
-                    clusters[label] = []
-                clusters[label].append(text)
+                clusters.setdefault(int(label), []).append(text)
 
-            result_description = []
-            for cluster in clusters.values():
-                prompt, schema = self.get_prompt("cluster_summarize").get_instruction(content=cluster)
-                result = await self.client.generate(
-                    prompt=prompt,
-                    schema=schema,
-                    progress_bar_desc="Map reduce for clustering"
-                ) # type: ignore
-                result_description.extend([r.content for r in result])
+            result_description: List[str] = []
+            for texts in clusters.values():
+                instruction: RAGUInstruction = self.get_prompt("cluster_summarize")
+                rendered_list: List[ChatMessages] = render(
+                    instruction.messages,
+                    content=texts,
+                    language=self.language,
+                )
+
+                result = await self.client.generate(  # type: ignore
+                    conversations=rendered_list,
+                    response_model=instruction.pydantic_model,
+                    progress_bar_desc="Map reduce for clustering",
+                )
+                result_description.extend([r.content for r in result if r])
 
             return ". ".join(result_description)
 
-        else:
-            return ". ".join(descriptions)
+        return ". ".join(descriptions)
 
 
 class RelationSummarizer(RaguGenerativeModule):
@@ -207,11 +225,11 @@ class RelationSummarizer(RaguGenerativeModule):
     """
 
     def __init__(
-            self,
-            client: BaseLLM = None,
-            use_llm_summarization: bool = True,
-            summarize_only_if_more_than: int = 5,
-            language: str = "russian"
+        self,
+        client: BaseLLM = None,
+        use_llm_summarization: bool = True,
+        summarize_only_if_more_than: int = 5,
+        language: str = "russian",
     ):
         _PROMPTS = ["relation_summarizer"]
         super().__init__(prompts=_PROMPTS)
@@ -245,9 +263,11 @@ class RelationSummarizer(RaguGenerativeModule):
 
         grouped_relations_df = self.group_relations(relations)
 
-        num_of_duplicated_entities = len(relations) - len(grouped_relations_df)
-        logger.info(f"Found {num_of_duplicated_entities} duplicated relations. "
-                    f"Number of unique relations: {len(grouped_relations_df)} ")
+        num_of_duplicated_relations = len(relations) - len(grouped_relations_df)
+        logger.info(
+            f"Found {num_of_duplicated_relations} duplicated relations. "
+            f"Number of unique relations: {len(grouped_relations_df)} "
+        )
 
         relations_to_return = await self.summarize_relations(grouped_relations_df)
 
@@ -282,14 +302,21 @@ class RelationSummarizer(RaguGenerativeModule):
         if relation_multi_desc.empty:
             return [Relation(**row) for _, row in relation_single_desc.iterrows()]
 
-        relations_to_summarize = []
+        relations_to_summarize: List[Relation] = []
         if self.use_llm_summarization:
             relations_to_summarize = [Relation(**row) for _, row in relation_multi_desc.iterrows()]
-            prompt, schema = self.get_prompt("relation_summarizer").get_instruction(
+
+            instruction: RAGUInstruction = self.get_prompt("relation_summarizer")
+            rendered_list: List[ChatMessages] = render(
+                instruction.messages,
                 relation=relations_to_summarize,
                 language=self.language,
             )
-            response: List[RelationDescriptionModel] = await self.client.generate(prompt=prompt, schema=schema) # type: ignore
+
+            response: List[RelationDescriptionModel] = await self.client.generate(  # type: ignore
+                conversations=rendered_list,
+                response_model=instruction.pydantic_model,
+            )
 
             for i, summary in enumerate(response):
                 if summary:
@@ -302,10 +329,10 @@ class RelationSummarizer(RaguGenerativeModule):
     @staticmethod
     def group_relations(relations: List[Relation]) -> pd.DataFrame:
         """
-        Group relations by ``subject_id`` and ``object_id`` and merge their fields.
+        Group relations by (subject_id, object_id) and merge their fields.
 
-        :param relations: List of :class:`Relation` objects to group.
-        :return: Aggregated relations as a :class:`pandas.DataFrame`.
+        :param relations: List of Relation objects.
+        :return: Aggregated relations as a pandas DataFrame.
         """
         relations_df = pd.DataFrame([asdict(relation) for relation in relations])
         grouped_relations = relations_df.groupby(["subject_id", "object_id"]).agg(
