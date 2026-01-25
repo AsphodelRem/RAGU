@@ -1,75 +1,80 @@
 import asyncio
 from typing import List
 
+from ragu.common.global_parameters import Settings
 from ragu.common.logger import logger
 from ragu.graph.graph_builder_pipeline import InMemoryGraphBuilder
 from ragu.graph.types import Entity, Relation, CommunitySummary
 from ragu.storage.index import Index
 
-from ragu.common.global_parameters import Settings
 
-
-# TODO: implement all methods
+# TODO: add all "atomic" operation (CRUD for artifacts)
 class KnowledgeGraph:
+    """
+    High-level facade for knowledge graph operations.
+
+    Handles graph construction, entity/relation merging logic, and
+    delegates all CRUD operations to the Index class.
+    """
+
     def __init__(
             self,
             extraction_pipeline: InMemoryGraphBuilder,
             index: Index,
-            make_community_summary: bool = True,
-            remove_isolated_nodes: bool = True,
-            vectorize_chunks: bool = False,
             language: str | None = None,
     ):
-        self.pipeline = extraction_pipeline
         self.index = index
-        self.make_community_summary = make_community_summary
-        self.remove_isolated_nodes = remove_isolated_nodes
-        self.vectorize_chunks = vectorize_chunks
+        self.pipeline = extraction_pipeline
+
+        self.build_params = extraction_pipeline.build_parameters
+
+        self.make_community_summary = self.build_params.make_community_summary
+        self.remove_isolated_nodes = self.build_params.remove_isolated_nodes
+        self.vectorize_chunks = self.build_params.vectorize_chunks
 
         self.language = language if language else Settings.language
 
-        if self.language != self.pipeline.language:
+        if self.language != self.language:
             logger.warning(
-                "Override language from %s to %s",
-                self.pipeline.language, self.language
+                f"Override language from {self.pipeline.language} to {self.language}"
             )
-            for o in self.pipeline.__dict__:
-                if getattr(o, "language", None):
-                    setattr(o, "language", self.language)
+            for o in self.pipeline.__dict__.values():
+                if hasattr(o, "language"):
+                    o.language = self.language
 
-        self._id_to_entity_map = {}
-        self._id_to_relation_map = {}
-
-        # Initialize storage folder if it doesn't exist
         Settings.init_storage_folder()
 
-    async def build_from_docs(self, docs) -> "KnowledgeGraph":
+    async def build_from_docs(self, docs: List[str]) -> "KnowledgeGraph":
+        """
+        Build knowledge graph from documents.
+        """
         entities, relations, chunks = await self.pipeline.extract_graph(docs)
 
-        # Check if we're in vector-only mode
         is_vector_only = getattr(self.pipeline, 'build_only_vector_context', False)
 
-        # Add entities and relations (skip if vector-only mode)
         if not is_vector_only:
-            await self.add_entity(entities)
-            await self.add_relation(relations)
+            await self.index.make_index(
+                entities=entities,
+                relations=relations,
+            )
 
             if self.remove_isolated_nodes:
                 await self.index.graph_backend.remove_isolated_nodes()
 
-        # Save chunks (always vectorize in vector-only mode)
         should_vectorize = self.vectorize_chunks or is_vector_only
         await self.index.insert_chunks(chunks, vectorize=should_vectorize)
 
-        # Build community summaries (skip if vector-only mode)
         if self.make_community_summary and not is_vector_only:
             communities, summaries = await self.high_level_build()
-            await self.index._insert_communities(communities)
-            await self.index._insert_summaries(summaries)
+            await self.index.insert_communities(communities)
+            await self.index.insert_summaries(summaries)
 
         return self
 
     async def high_level_build(self):
+        """
+        Build communities and their summaries.
+        """
         communities = await self.index.graph_backend.cluster()
         summaries = await self.pipeline.get_community_summary(
             communities=communities
