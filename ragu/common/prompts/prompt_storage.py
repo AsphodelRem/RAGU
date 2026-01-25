@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Type, Tuple, List
+from typing import Optional, Type
 
-from jinja2 import Template
 from pydantic import BaseModel
 
 from ragu.common.prompts.default_models import (
@@ -16,7 +15,7 @@ from ragu.common.prompts.default_models import (
     RelationDescriptionModel,
     ClusterSummarizationModel,
     QueryPlan,
-    RewriteQuery
+    RewriteQuery,
 )
 from ragu.common.prompts.default_templates import (
     DEFAULT_ARTIFACTS_EXTRACTOR_PROMPT,
@@ -26,7 +25,8 @@ from ragu.common.prompts.default_templates import (
     DEFAULT_ENTITY_SUMMARIZER_PROMPT,
     DEFAULT_RESPONSE_ONLY_PROMPT,
     DEFAULT_GLOBAL_SEARCH_CONTEXT_PROMPT,
-    DEFAULT_GLOBAL_SEARCH_PROMPT, DEFAULT_CLUSTER_SUMMARIZER_PROMPT,
+    DEFAULT_GLOBAL_SEARCH_PROMPT,
+    DEFAULT_CLUSTER_SUMMARIZER_PROMPT,
     DEFAULT_RAGU_LM_ENTITY_EXTRACTION_PROMPT,
     DEFAULT_RAGU_LM_ENTITY_NORMALIZATION_PROMPT,
     DEFAULT_RAGU_LM_ENTITY_DESCRIPTION_PROMPT,
@@ -34,150 +34,178 @@ from ragu.common.prompts.default_templates import (
     DEFAULT_QUERY_DECOMPOSITION_PROMPT,
     DEFAULT_QUERY_REWRITE_PROMPT,
 )
+from ragu.common.prompts.messages import (
+    ChatMessages,
+    UserMessage,
+    SystemMessage
+)
 
 
-@dataclass
-class PromptTemplate:
-    """
-    Represents a Jinja2-based prompt template for instruction generation.
-
-    Each template defines:
-      - a Jinja2 text pattern (`template`)
-      - an optional Pydantic schema for structured output validation (`schema`)
-      - a short description of its purpose (`description`)
-
-    The template can be rendered dynamically with keyword arguments,
-    supporting both single-instance and batched (list/tuple) generation.
-    """
-
-    template: str
-    schema: Type[BaseModel] = None
-    description: str = ""
-
-    def __post_init__(self):
-        """
-        Compile the Jinja2 template upon initialization for faster rendering.
-        """
-        self.compiled_template = Template(self.template)
-
-    def get_instruction(self, **batch_kwargs) -> Tuple[List[str], Type[BaseModel]]:
-        """
-        Render one or more prompt instructions using the template.
-
-        Supports both single-value rendering and batch processing
-        (when lists or tuples are passed as arguments).
-
-        :param batch_kwargs: Key-value pairs passed into the Jinja2 template.
-                             Lists and tuples trigger batch rendering.
-        :return: A tuple of (list of rendered instructions, associated schema).
-        """
-        batch_lengths = {
-            key: len(value) for key, value in batch_kwargs.items()
-            if isinstance(value, (list, tuple))
-        }
-
-        # No batched parameters → single instruction
-        if not batch_lengths:
-            return [self.compiled_template.render(**batch_kwargs)], self.schema
-
-        # Validate that all batched parameters have equal length
-        unique_lengths = set(batch_lengths.values())
-        if len(unique_lengths) > 1:
-            raise ValueError("All batch parameters must have the same length")
-
-        batch_size = next(iter(unique_lengths))
-        batch_params = []
-        for i in range(batch_size):
-            params = {}
-            for key, value in batch_kwargs.items():
-                if isinstance(value, (list, tuple)):
-                    params[key] = value[i]
-                else:
-                    params[key] = value
-            batch_params.append(params)
-
-        instructions = [
-            self.compiled_template.render(**params)
-            for params in batch_params
-        ]
-
-        return instructions, self.schema
+@dataclass(frozen=True, slots=True)
+class RAGUInstruction:
+    messages: ChatMessages
+    pydantic_model: Optional[Type[BaseModel]] = None
+    description: Optional[str] = None
 
 
-DEFAULT_PROMPT_TEMPLATES = {
-    "artifact_extraction": PromptTemplate(
-        template=DEFAULT_ARTIFACTS_EXTRACTOR_PROMPT,
-        schema=ArtifactsModel,
-        description="Prompt for extracting artifacts (entities and relations) from a text passage."
+DEFAULT_PROMPT_TEMPLATES: dict[str, RAGUInstruction] = {
+    "artifact_extraction": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_ARTIFACTS_EXTRACTOR_PROMPT),
+            ]
+        ),
+        pydantic_model=ArtifactsModel,
+        description="Prompt for extracting artifacts (entities and relations) from a text passage.",
     ),
-    "artifact_validation": PromptTemplate(
-        template=DEFAULT_ARTIFACTS_VALIDATOR_PROMPT,
-        schema=ArtifactsModel,
-        description="Prompt for validating extracted artifacts against a schema."
+
+    "artifact_validation": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_ARTIFACTS_VALIDATOR_PROMPT),
+            ]
+        ),
+        pydantic_model=ArtifactsModel,
+        description="Prompt for validating extracted artifacts against a schema.",
     ),
-    "community_report": PromptTemplate(
-        template=DEFAULT_COMMUNITY_REPORT_PROMPT,
-        schema=CommunityReportModel,
-        description="Prompt for generating community summaries from contextual data."
+
+    "community_report": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_COMMUNITY_REPORT_PROMPT),
+            ]
+        ),
+        pydantic_model=CommunityReportModel,
+        description="Prompt for generating community summaries from contextual data.",
     ),
-    "entity_summarizer": PromptTemplate(
-        template=DEFAULT_ENTITY_SUMMARIZER_PROMPT,
-        schema=EntityDescriptionModel,
-        description="Prompt for summarizing entity descriptions."
+
+    "entity_summarizer": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_ENTITY_SUMMARIZER_PROMPT),
+            ]
+        ),
+        pydantic_model=EntityDescriptionModel,
+        description="Prompt for summarizing entity descriptions.",
     ),
-    "relation_summarizer": PromptTemplate(
-        template=DEFAULT_RELATIONSHIP_SUMMARIZER_PROMPT,
-        schema=RelationDescriptionModel,
-        description="Prompt for summarizing relationship descriptions."
+
+    "relation_summarizer": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_RELATIONSHIP_SUMMARIZER_PROMPT),
+            ]
+        ),
+        pydantic_model=RelationDescriptionModel,
+        description="Prompt for summarizing relationship descriptions.",
     ),
-    "global_search_context": PromptTemplate(
-        template=DEFAULT_GLOBAL_SEARCH_CONTEXT_PROMPT,
-        schema=GlobalSearchContextModel,
-        description="Prompt for generating contextual information for a global search."
+
+    "global_search_context": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_GLOBAL_SEARCH_CONTEXT_PROMPT),
+            ]
+        ),
+        pydantic_model=GlobalSearchContextModel,
+        description="Prompt for generating contextual information for a global search.",
     ),
-    "global_search": PromptTemplate(
-        template=DEFAULT_GLOBAL_SEARCH_PROMPT,
-        schema=GlobalSearchResponseModel,
-        description="Prompt for generating a synthesized global search response."
+
+    "global_search": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_GLOBAL_SEARCH_PROMPT),
+            ]
+        ),
+        pydantic_model=GlobalSearchResponseModel,
+        description="Prompt for generating a synthesized global search response.",
     ),
-    "local_search": PromptTemplate(
-        template=DEFAULT_RESPONSE_ONLY_PROMPT,
-        schema=DefaultResponseModel,
-        description="Prompt for generating a local context-based search response."
+
+    "local_search": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_RESPONSE_ONLY_PROMPT),
+            ]
+        ),
+        pydantic_model=DefaultResponseModel,
+        description="Prompt for generating a local context-based search response.",
     ),
-    "naive_search": PromptTemplate(
-        template=DEFAULT_RESPONSE_ONLY_PROMPT,
-        schema=DefaultResponseModel,
-        description="Prompt for generating a naive vector RAG search response."
+
+    "naive_search": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_RESPONSE_ONLY_PROMPT),
+            ]
+        ),
+        pydantic_model=DefaultResponseModel,
+        description="Prompt for generating a naive vector RAG search response.",
     ),
-    "cluster_summarize": PromptTemplate(
-        template=DEFAULT_CLUSTER_SUMMARIZER_PROMPT,
-        schema=ClusterSummarizationModel
+
+    "cluster_summarize": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_CLUSTER_SUMMARIZER_PROMPT),
+            ]
+        ),
+        pydantic_model=ClusterSummarizationModel,
+        description=None,
     ),
-    "ragu_lm_entity_extraction": PromptTemplate(
-        template=DEFAULT_RAGU_LM_ENTITY_EXTRACTION_PROMPT,
-        description="Instruction for RAGU-lm entity extraction stage."
+
+    "ragu_lm_entity_extraction": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_RAGU_LM_ENTITY_EXTRACTION_PROMPT),
+            ]
+        ),
+        pydantic_model=None,
+        description="Instruction for RAGU-lm entity extraction stage.",
     ),
-    "ragu_lm_entity_normalization": PromptTemplate(
-        template=DEFAULT_RAGU_LM_ENTITY_NORMALIZATION_PROMPT,
-        description="Instruction for RAGU-lm entity normalization stage."
+
+    "ragu_lm_entity_normalization": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_RAGU_LM_ENTITY_NORMALIZATION_PROMPT),
+            ]
+        ),
+        pydantic_model=None,
+        description="Instruction for RAGU-lm entity normalization stage.",
     ),
-    "ragu_lm_entity_description": PromptTemplate(
-        template=DEFAULT_RAGU_LM_ENTITY_DESCRIPTION_PROMPT,
-        description="Instruction for RAGU-lm entity description stage."
+
+    "ragu_lm_entity_description": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_RAGU_LM_ENTITY_DESCRIPTION_PROMPT),
+            ]
+        ),
+        pydantic_model=None,
+        description="Instruction for RAGU-lm entity description stage.",
     ),
-    "ragu_lm_relation_description": PromptTemplate(
-        template=DEFAULT_RAGU_LM_RELATION_DESCRIPTION_PROMPT,
-        description="Instruction for RAGU-lm relation description stage."
+
+    "ragu_lm_relation_description": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_RAGU_LM_RELATION_DESCRIPTION_PROMPT),
+            ]
+        ),
+        pydantic_model=None,
+        description="Instruction for RAGU-lm relation description stage.",
     ),
-    "query_decomposition": PromptTemplate(
-        template=DEFAULT_QUERY_DECOMPOSITION_PROMPT,
-        schema=QueryPlan,
-        description="Prompt for decomposing a complex query into atomic subqueries with dependencies."
+
+    "query_decomposition": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_QUERY_DECOMPOSITION_PROMPT),
+            ]
+        ),
+        pydantic_model=QueryPlan,
+        description="Prompt for decomposing a complex query into atomic subqueries with dependencies.",
     ),
-    "query_rewrite": PromptTemplate(
-        template=DEFAULT_QUERY_REWRITE_PROMPT,
-        schema=RewriteQuery,
-        description="Prompt for rewriting a subquery using answers from its dependencies."
+
+    "query_rewrite": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_QUERY_REWRITE_PROMPT),
+            ]
+        ),
+        pydantic_model=RewriteQuery,
+        description="Prompt for rewriting a subquery using answers from its dependencies.",
     ),
 }
