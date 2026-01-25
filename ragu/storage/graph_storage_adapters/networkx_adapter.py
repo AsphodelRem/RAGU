@@ -57,7 +57,9 @@ class NetworkXStorage(BaseGraphStorage):
     def __init__(
         self,
         filename: str,
-        clustering_params=None,
+        random_seed: Optional[int] = 42,
+        max_cluster_size: int=128,
+        clustering_params: Dict | None=None,
         **kwargs,
     ):
         """
@@ -67,7 +69,11 @@ class NetworkXStorage(BaseGraphStorage):
         :param clustering_params: Optional parameters for community detection.
         """
         if clustering_params is None:
-            clustering_params = {"max_community_size": 1000}
+            clustering_params = {}
+        if "max_cluster_size" not in clustering_params:
+            clustering_params.update({"max_cluster_size": max_cluster_size})
+        if "random_seed" not in clustering_params:
+            clustering_params.update({"random_seed": random_seed})
 
         self._graph: nx.Graph = nx.read_gml(filename) if os.path.exists(filename) else nx.Graph()
         self._where_to_save = filename
@@ -108,6 +114,48 @@ class NetworkXStorage(BaseGraphStorage):
 
         relations: List[Relation] = []
         for u, v, metadata in self._graph.edges(source_node_id, data=True):
+            subject_id = str(u)
+            object_id = str(v)
+            subject_name = self._graph.nodes.get(u, {}).get("entity_name", subject_id)
+            object_name = self._graph.nodes.get(v, {}).get("entity_name", object_id)
+            relation = Relation(
+                subject_id=subject_id,
+                object_id=object_id,
+                subject_name=subject_name,
+                object_name=object_name,
+                description=metadata.get("description", ""),
+                relation_strength=float(metadata.get("relation_strength", 1.0)),
+                source_chunk_id=list(metadata.get("source_chunk_id", [])),
+                id=metadata.get("id"),
+            )
+            relations.append(relation)
+
+        seen: set[Tuple[str, str]] = set()
+        unique_relations: List[Relation] = []
+        for r in relations:
+            key = tuple(sorted((r.subject_id, r.object_id)))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_relations.append(r)
+        return unique_relations
+
+    async def get_all_edges_for_node(self, node_id: str) -> List[Relation]:
+        """
+        Retrieve all edges where the node is either subject or object.
+
+        For undirected graphs, this is equivalent to get_node_edges.
+        For directed graphs, this would include both incoming and outgoing edges.
+
+        :param node_id: ID of the node whose edges to fetch.
+        :return: List of all relations involving this node.
+        """
+        if not self._graph.has_node(node_id):
+            return []
+
+        relations: List[Relation] = []
+
+        for u, v, metadata in self._graph.edges(node_id, data=True):
             subject_id = str(u)
             object_id = str(v)
             subject_name = self._graph.nodes.get(u, {}).get("entity_name", subject_id)

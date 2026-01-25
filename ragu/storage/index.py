@@ -9,6 +9,7 @@ from typing import (
     Iterable,
     List,
     Optional,
+    Tuple,
     Type
 )
 
@@ -16,12 +17,14 @@ from ragu.chunker.types import Chunk
 from ragu.common.global_parameters import DEFAULT_FILENAMES
 from ragu.common.global_parameters import Settings
 from ragu.embedder.base_embedder import BaseEmbedder
+from ragu.graph.graph_builder_pipeline import KnowledgeGraphBuilderSettings
 from ragu.graph.types import (
     Entity,
     Relation,
     Community,
     CommunitySummary
 )
+from ragu.storage.transaction import DeleteTransaction
 from ragu.storage.base_storage import (
     BaseKVStorage,
     BaseVectorStorage,
@@ -35,12 +38,17 @@ from ragu.common.logger import logger
 
 class Index:
     """
-    Index class that manages storages for a knowledge graph.
+    Index class that manages all storage operations for a knowledge graph.
+
+    Provides CRUD operations for entities, relations, chunks, communities,
+    and community summaries with proper cascading deletes and multi-storage
+    consistency.
     """
 
     def __init__(
             self,
             embedder: BaseEmbedder,
+            builder_parameters: KnowledgeGraphBuilderSettings = KnowledgeGraphBuilderSettings,
             graph_backend_storage: Type[BaseGraphStorage] = NetworkXStorage,
             kv_storage_type: Type[BaseKVStorage] = JsonKVStorage,
             vdb_storage_type: Type[BaseVectorStorage] = NanoVectorDBStorage,
@@ -56,6 +64,8 @@ class Index:
         # Initialize storage folder if it doesn't exist
         Settings.init_storage_folder()
         storage_folder: str = Settings.storage_folder
+
+        self.builder_parameters = builder_parameters
 
         self.embedder = embedder
         self.summary_kv_storage_kwargs = self._build_storage_kwargs(
@@ -108,7 +118,11 @@ class Index:
         self.chunk_vector_db = vdb_storage_type(embedder=embedder, **chunk_vdb_storage_kwargs)  # type: ignore
 
         # Graph storage
-        self.graph_backend = graph_backend_storage(**self.graph_storage_kwargs)  # type: ignore
+        self.graph_backend = graph_backend_storage(
+            max_cluster_size=builder_parameters.max_cluster_size,   # type: ignore
+            random_seed=builder_parameters.random_seed,             # type: ignore
+            **self.graph_storage_kwargs                             # type: ignore
+        )
 
     async def make_index(
             self,
@@ -118,54 +132,51 @@ class Index:
             summaries: List[CommunitySummary] = None,
     ) -> None:
         """
-        Creates an index for the given knowledge graph. Save entities, relations, communities and community summaries.
+        Creates an index for the given knowledge graph items.
         """
         tasks = []
 
         if entities:
             tasks.extend(
                 [
-                    self._insert_entities_to_graph(entities),
-                    self._insert_entities_to_vdb(entities),
+                    self.insert_entities_to_graph(entities),
+                    self.insert_entities_to_vdb(entities),
                 ]
             )
         if relations:
             tasks.extend(
                 [
-                    self._insert_relations_to_graph(relations),
-                    self._insert_relations_to_vdb(relations),
+                    self.insert_relations_to_graph(relations),
+                    self.insert_relations_to_vdb(relations),
                 ]
             )
         if communities:
-            tasks.append(self._insert_communities(communities))
+            tasks.append(self.insert_communities(communities))
         if summaries:
-            tasks.append(self._insert_summaries(summaries))
+            tasks.append(self.insert_summaries(summaries))
 
         if tasks:
             await asyncio.gather(*tasks)
 
-    async def _insert_entities_to_graph(self, entities: List[Entity]) -> None:
+    async def insert_entities_to_graph(self, entities: List[Entity]) -> None:
         if not entities:
             return
         backend = self.graph_backend
         if self.graph_backend is None:
             logger.warning("Graph storage is not initialized.")
             return
-        await self._graph_bulk_upsert(backend, entities, backend.upsert_node, "entities")
+        await self.graph_bulk_upsert(backend, entities, backend.upsert_node, "entities")
 
-    async def _insert_relations_to_graph(self, relations: List[Relation]) -> None:
+    async def insert_relations_to_graph(self, relations: List[Relation]) -> None:
         if not relations:
             return
         backend = self.graph_backend
         if backend is None:
             logger.warning("Graph storage is not initialized.")
             return
-        await self._graph_bulk_upsert(backend, relations, backend.upsert_edge, "relations")
+        await self.graph_bulk_upsert(backend, relations, backend.upsert_edge, "relations")
 
-    async def _insert_entities_to_vdb(self, entities: List[Entity]) -> None:
-        """
-        Inserts entities from the knowledge graph into the vector database.
-        """
+    async def insert_entities_to_vdb(self, entities: List[Entity]) -> None:
         if not entities:
             return
 
@@ -178,10 +189,7 @@ class Index:
         }
         await self._vdb_upsert(self.entity_vector_db, data_for_vdb, "entities")
 
-    async def _insert_relations_to_vdb(self, relations: List[Relation]) -> None:
-        """
-        Inserts relations from the knowledge graph into the vector database.
-        """
+    async def insert_relations_to_vdb(self, relations: List[Relation]) -> None:
         if not relations:
             return
 
@@ -197,11 +205,7 @@ class Index:
 
     async def insert_chunks(self, chunks: List[Chunk], vectorize: bool = False) -> None:
         """
-        Stores raw chunks in a KV storage (id -> chunk fields).
-        Optionally vectorizes chunks and stores them in the vector database.
-
-        :param chunks: List of Chunk objects to store.
-        :param vectorize: If True, also insert chunks into the vector database for similarity search.
+        Stores raw chunks in a KV storage.
         """
         tasks = []
 
@@ -219,15 +223,12 @@ class Index:
             tasks.append(insert_to_kv())
 
         if vectorize:
-            tasks.append(self._insert_chunks_to_vdb(chunks))
+            tasks.append(self.insert_chunks_to_vdb(chunks))
 
         if tasks:
             await asyncio.gather(*tasks)
 
-    async def _insert_chunks_to_vdb(self, chunks: List[Chunk]) -> None:
-        """
-        Inserts chunks into the vector database for similarity search.
-        """
+    async def insert_chunks_to_vdb(self, chunks: List[Chunk]) -> None:
         if not chunks:
             return
 
@@ -240,16 +241,7 @@ class Index:
         }
         await self._vdb_upsert(self.chunk_vector_db, data_for_vdb, "chunks")
 
-    async def _insert_communities(self, communities: List[Community]) -> None:
-        """
-        Store communities as ids only:
-        community.id -> {
-            "level": int,
-            "cluster_id": int,
-            "entity_ids": [str, ...],
-            "relation_ids": [str, ...]
-        }
-        """
+    async def insert_communities(self, communities: List[Community]) -> None:
         if self.community_kv_storage is None:
             logger.warning("Community KV storage is not initialized.")
             return
@@ -270,10 +262,7 @@ class Index:
         except Exception as e:
             logger.error(f"Failed to insert communities into KV storage: {e}")
 
-    async def _insert_summaries(self, summaries: List[CommunitySummary]) -> None:
-        """
-        Store summaries as id -> text.
-        """
+    async def insert_summaries(self, summaries: List[CommunitySummary]) -> None:
         if self.community_summary_kv_storage is None:
             logger.warning("Community summary KV storage is not initialized.")
             return
@@ -286,7 +275,7 @@ class Index:
         except Exception as e:
             logger.error(f"Failed to insert community summaries into KV storage: {e}")
 
-    async def _graph_bulk_upsert(
+    async def graph_bulk_upsert(
             self,
             backend: BaseGraphStorage,
             items: Iterable[Any],

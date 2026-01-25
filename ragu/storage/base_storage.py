@@ -108,7 +108,7 @@ class BaseGraphStorage(BaseStorage, ABC):
         ...
 
     @abstractmethod
-    async def cluster(self, **kwargs):
+    async def cluster(self, max_cluster_size: int=128, **additional_cluster_kwargs):
         ...
 
     @abstractmethod
