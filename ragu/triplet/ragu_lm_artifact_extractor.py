@@ -16,12 +16,10 @@ from ragu.chunker.types import Chunk
 from ragu.common.batch_generator import BatchGenerator
 from ragu.common.cache import TextCache, make_llm_cache_key
 from ragu.common.logger import logger
+from ragu.common.prompts.messages import ChatMessages, UserMessage, render
+from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.graph.types import Entity, Relation
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
-
-
-# TODO: move system prompts to PromptTemplate class
-SYSTEM_PROMPT_RU = "Вы - эксперт в области анализа текстов и извлечения семантической информации из них."
 
 
 @dataclass
@@ -43,9 +41,9 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
 
     def __init__(
         self,
-        ragu_lm_vllm_url: str,
+        ragu_lm_vllm_url: str="",
         model_name: str = "RaguTeam/RAGU-lm",
-        system_prompt: str = SYSTEM_PROMPT_RU,
+        api_token: str="EMPTY",
         temperature: float = 0.0,
         top_p: float = 0.95,
         top_k: int = 100,
@@ -58,7 +56,6 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
 
         :param ragu_lm_vllm_url: Base URL of the deployed vLLM server.
         :param model_name: Model name used for inference.
-        :param system_prompt: System instruction for the language model.
         :param temperature: Sampling temperature used in generation.
         :param top_p: Probability mass for nucleus sampling.
         :param top_k: Number of tokens considered in top-k sampling.
@@ -76,7 +73,6 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         self.base_url = ragu_lm_vllm_url
         self.model_name = model_name
 
-        self.system_prompt = system_prompt
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
@@ -85,7 +81,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
 
         self.client = AsyncOpenAI(
             base_url=self.base_url,
-            api_key="EMPTY",
+            api_key=api_token,
             timeout=request_timeout,
         )
 
@@ -159,17 +155,17 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         """
         Stage 1: Extract raw entities from all chunks in a single batch.
         """
-        template = self.get_prompt("ragu_lm_entity_extraction")
+        instruction: RAGUInstruction = self.get_prompt("ragu_lm_entity_extraction")
 
-        prompts = []
-        for ctx in contexts:
-            prompt, _ = template.get_instruction(text=ctx.chunk.content)
-            prompts.extend(prompt if isinstance(prompt, list) else [prompt])
+        conversations: List[ChatMessages] = render(
+            instruction.messages,
+            text=[ctx.chunk.content for ctx in contexts]
+        )
 
-        if not prompts:
+        if not conversations:
             return
 
-        responses = await self._run(prompts, description="Extracting entities.")
+        responses = await self._run(conversations, description="Extracting entities.")
 
         # Parse responses back to contexts
         for ctx, response in zip(contexts, responses):
@@ -189,27 +185,29 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         """
         Stage 2: Normalize all entities across all chunks in a single batch.
         """
-        template = self.get_prompt("ragu_lm_entity_normalization")
+        instruction: RAGUInstruction = self.get_prompt("ragu_lm_entity_normalization")
 
-        prompts = []
-        prompt_map: List[Tuple[ChunkContext, int]] = []  # (context, entity_index)
+        conversations = []
+        prompt_map: List[Tuple[ChunkContext, int]] = []
 
         for ctx in contexts:
             if not ctx.raw_entities:
                 continue
-            instructions, _ = template.get_instruction(
+
+            chunk_conversations: List[ChatMessages] = render(
+                instruction.messages,
                 source_text=ctx.chunk.content,
                 source_entity=ctx.raw_entities,
             )
-            instruction_list = instructions if isinstance(instructions, list) else [instructions]
-            for i, instruction in enumerate(instruction_list):
-                prompts.append(instruction)
+
+            for i, conversation in enumerate(chunk_conversations):
+                conversations.append(conversation)
                 prompt_map.append((ctx, i))
 
-        if not prompts:
+        if not conversations:
             return
 
-        responses = await self._run(prompts, description="Normalizing entities")
+        responses = await self._run(conversations, description="Normalizing entities")
 
         # Parse responses back to contexts
         for (ctx, entity_idx), response in zip(prompt_map, responses):
@@ -223,27 +221,29 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         """
         Stage 3: Generate descriptions for all entities in a single batch.
         """
-        template = self.get_prompt("ragu_lm_entity_description")
+        instruction: RAGUInstruction = self.get_prompt("ragu_lm_entity_description")
 
-        prompts = []
+        conversations = []
         prompt_map: List[Tuple[ChunkContext, str]] = []  # (context, entity_name)
 
         for ctx in contexts:
             if not ctx.normalized_entities:
                 continue
-            instructions, _ = template.get_instruction(
+
+            chunk_conversations: List[ChatMessages] = render(
+                instruction.messages,
                 normalized_entity=ctx.normalized_entities,
                 source_text=ctx.chunk.content,
             )
-            instruction_list = instructions if isinstance(instructions, list) else [instructions]
-            for instruction, entity_name in zip(instruction_list, ctx.normalized_entities):
-                prompts.append(instruction)
+
+            for conversation, entity_name in zip(chunk_conversations, ctx.normalized_entities):
+                conversations.append(conversation)
                 prompt_map.append((ctx, entity_name))
 
-        if not prompts:
+        if not conversations:
             return
 
-        responses = await self._run(prompts, description="Generating descriptions")
+        responses = await self._run(conversations, description="Generating descriptions")
 
         # Parse responses back to contexts
         for (ctx, entity_name), response in zip(prompt_map, responses):
@@ -267,29 +267,34 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         """
         Stage 4: Extract relations for all entity pairs in a single batch.
         """
-        template = self.get_prompt("ragu_lm_relation_description")
+        instruction: RAGUInstruction = self.get_prompt("ragu_lm_relation_description")
 
-        prompts = []
+        conversations = []
         prompt_map: List[Tuple[ChunkContext, Entity, Entity]] = []  # (context, subject, object)
 
         for ctx in contexts:
             if len(ctx.entities) < 2:
                 continue
-            for subject, obj in itertools.permutations(ctx.entities, 2):
-                instructions, _ = template.get_instruction(
-                    first_normalized_entity=subject.entity_name,
-                    second_normalized_entity=obj.entity_name,
-                    source_text=ctx.chunk.content,
-                )
-                instruction_list = instructions if isinstance(instructions, list) else [instructions]
-                for instruction in instruction_list:
-                    prompts.append(instruction)
-                    prompt_map.append((ctx, subject, obj))
 
-        if not prompts:
+            entity_pairs = list(itertools.permutations(ctx.entities, 2))
+            first_entities = [pair[0].entity_name for pair in entity_pairs]
+            second_entities = [pair[1].entity_name for pair in entity_pairs]
+
+            chunk_conversations: List[ChatMessages] = render(
+                instruction.messages,
+                first_normalized_entity=first_entities,
+                second_normalized_entity=second_entities,
+                source_text=ctx.chunk.content,
+            )
+
+            for conversation, (subject, obj) in zip(chunk_conversations, entity_pairs):
+                conversations.append(conversation)
+                prompt_map.append((ctx, subject, obj))
+
+        if not conversations:
             return
 
-        responses = await self._run(prompts, description="Extracting relations")
+        responses = await self._run(conversations, description="Extracting relations")
 
         # Parse responses and collect candidates per context
         context_candidates: Dict[int, List[Relation]] = {id(ctx): [] for ctx in contexts}
@@ -303,6 +308,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
                 object_id=obj.id,
                 subject_name=subject.entity_name,
                 object_name=obj.entity_name,
+                relation_type="UNKNOWN",
                 description=description,
                 source_chunk_id=[ctx.chunk.id],
             )
@@ -313,14 +319,15 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
             candidates = context_candidates[id(ctx)]
             ctx.relations = self.filter_relations(candidates)
 
-    async def _async_call(self, system_prompt: str, prompt: str) -> ChatCompletion:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ]
+    async def _async_call(self, conversation: ChatMessages) -> ChatCompletion:
+        """
+        Make async call to the LLM with a ChatMessages conversation.
 
+        :param conversation: ChatMessages object containing the conversation history.
+        :return: ChatCompletion response from the model.
+        """
         return await self.client.chat.completions.create(
-            messages=messages,  # type: ignore
+            messages=conversation.to_openai(),
             model=self.model_name,
             temperature=self.temperature,
             top_p=self.top_p,
@@ -348,8 +355,12 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
             return ""
 
     async def _check_connection(self) -> None:
+        """
+        Check if the server with RAGU-lm is reachable and the model is available.
+        """
         try:
-            _ = await self._async_call("", "")
+            test_conversation = ChatMessages.from_messages([UserMessage(content="Hello, how are you?")])
+            _ = await self._async_call(test_conversation)
         except openai.APIConnectionError:
             raise ConnectionError(
                 "It looks like the vllm with RAGU-LM is not running. "
@@ -361,20 +372,26 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
                 "Check the model name that you pass to vllm."
             )
 
-    async def _run(self, prompts: List[str], description: str = "") -> List[Any]:
-        if not prompts:
+    async def _run(self, conversations: List[ChatMessages], description: str = "") -> List[Any]:
+        """
+        Run LLM inference on a batch of conversations with caching support.
+
+        :param conversations: List of ChatMessages to process.
+        :param description: Description for progress bar.
+        :return: List of responses (either strings or Exceptions).
+        """
+        if not conversations:
             return []
 
-        with tqdm_asyncio(total=len(prompts), desc=description if description else None) as pbar:
-            results: List[Any] = [None] * len(prompts)
-            pending: List[Tuple[int, str, str]] = []  # (index, prompt, cache_key)
+        with tqdm_asyncio(total=len(conversations), desc=description if description else None) as pbar:
+            results: List[Any] = [None] * len(conversations)
+            pending: List[Tuple[int, ChatMessages, str]] = []  # (index, conversation, cache_key)
             cache_hits = 0
 
-            # Check cache for all prompts
-            for idx, prompt in enumerate(prompts):
+            for idx, conversation in enumerate(conversations):
+                conversation_str = conversation.to_str()
                 cache_key = make_llm_cache_key(
-                    prompt=prompt,
-                    system_prompt=self.system_prompt,
+                    content=conversation_str,
                     model_name=self.model_name,
                 )
                 cached = await self._cache.get(cache_key)
@@ -383,18 +400,22 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
                     cache_hits += 1
                     pbar.update(1)
                 else:
-                    pending.append((idx, prompt, cache_key))
+                    pending.append((idx, conversation, cache_key))
 
             if cache_hits:
-                logger.info(f"Cache served {cache_hits}/{len(prompts)} responses")
+                logger.info(f"Cache served {cache_hits}/{len(conversations)} responses")
 
             # Process pending requests in batches
             if pending:
-                async def process_request(idx: int, prompt: str, cache_key: str) -> Tuple[int, str, str, Any]:
-                    input_instruction = f"[system]: {self.system_prompt}\n[user]: {prompt}"
+                async def process_request(
+                        idx: int,
+                        conversation: ChatMessages,
+                        cache_key: str
+                ) -> Tuple[int, str, str, Any]:
+                    input_instruction = conversation.to_str()
                     async with self._sem:
                         try:
-                            response = await self._async_call(self.system_prompt, prompt)
+                            response = await self._async_call(conversation)
                             content = self._content(response)
                             return idx, cache_key, input_instruction, content
                         except Exception as e:
@@ -404,7 +425,10 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
 
                 # Process in batches to save cache periodically
                 for batch in BatchGenerator(pending, self._cache.flush_every_n_writes).get_batches():
-                    tasks = [process_request(idx, prompt, cache_key) for idx, prompt, cache_key in batch]
+                    tasks = [
+                        process_request(idx, conversation, cache_key)
+                        for idx, conversation, cache_key in batch
+                    ]
                     completed = await asyncio.gather(*tasks, return_exceptions=True)
 
                     for result in completed:
