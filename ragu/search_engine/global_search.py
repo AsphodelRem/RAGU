@@ -138,4 +138,4 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
             response_model=instruction.pydantic_model,
         )
 
-        return result[0].response if hasattr(result, "response") else result
+        return result[0].response if hasattr(result[0], "response") else result[0]

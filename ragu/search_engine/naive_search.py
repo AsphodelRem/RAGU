@@ -151,9 +151,9 @@ class NaiveSearchEngine(BaseEngine):
         )
         rendered: ChatMessages = rendered_list[0]
 
-        result = await self.client.generate(
+        result: List = await self.client.generate(
             conversations=[rendered],
             response_model=instruction.pydantic_model,
         )
 
-        return result.response if hasattr(result, "response") else str(result)
+        return result[0].response if hasattr(result[0], "response") else result[0]
