@@ -98,6 +98,7 @@ class Relation:
     object_id: str
     subject_name: str
     object_name: str
+    relation_type: str
     description: str
     relation_strength: int | float = 1.0
     source_chunk_id: list[str] = field(default_factory=list)

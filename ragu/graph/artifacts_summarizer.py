@@ -335,7 +335,7 @@ class RelationSummarizer(RaguGenerativeModule):
         :return: Aggregated relations as a pandas DataFrame.
         """
         relations_df = pd.DataFrame([asdict(relation) for relation in relations])
-        grouped_relations = relations_df.groupby(["subject_id", "object_id"]).agg(
+        grouped_relations = relations_df.groupby(["subject_id", "object_id", "relation_type"]).agg(
             subject_name=("subject_name", "first"),
             object_name=("object_name", "first"),
             description=("description", lambda x: "\n".join(x.dropna().drop_duplicates().astype(str))),

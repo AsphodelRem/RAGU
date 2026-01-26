@@ -55,6 +55,7 @@ class EntityModel(BaseModel):
 class RelationModel(BaseModel):
     source_entity: str = Field(..., description="Name of the source entity (matches an Entity.entity_name)")
     target_entity: str = Field(..., description="Name of the target entity (matches an Entity.entity_name)")
+    relation_type: str = Field(..., description="Type of relation")
     description: str = Field(..., description="Description of the relationship")
     relationship_strength: conint(ge=0, le=5) = Field(
         ..., description="Relationship strength 0–5 (0 = weak, 5 = strong)"

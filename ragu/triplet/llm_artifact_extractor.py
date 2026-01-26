@@ -9,7 +9,7 @@ from ragu.common.prompts.messages import ChatMessages, render
 from ragu.graph.types import Entity, Relation
 from ragu.llm.base_llm import BaseLLM
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
-from ragu.triplet.types import NEREL_ENTITY_TYPES
+from ragu.triplet.types import NEREL_ENTITY_TYPES, NEREL_RELATION_TYPES
 
 
 class ArtifactsExtractorLLM(BaseArtifactExtractor):
@@ -29,7 +29,7 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
         do_validation: bool = False,
         language: str | None = None,
         entity_types: Optional[List[str]] = NEREL_ENTITY_TYPES,
-        relation_types: Optional[List[str]] = None,
+        relation_types: Optional[List[str]] = NEREL_RELATION_TYPES,
     ):
         """
         Initialize a new :class:`ArtifactsExtractorLLM`.
@@ -76,7 +76,7 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
             entity_types=self.entity_types,
             relation_types=self.relation_types,
         )
-
+        print(extraction_conversations)
         result_list = await self.client.generate(
             conversations=extraction_conversations,
             response_model=extraction_instruction.pydantic_model,
@@ -112,7 +112,7 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
                     continue
                 entity = Entity(
                     entity_name=result.get("entity_name", ""),
-                    entity_type=result.get("entity_type", ""),
+                    entity_type=result.get("entity_type", "UNKNOWN"),
                     description=result.get("description", ""),
                     source_chunk_id=[chunk.id],
                     documents_id=[],
@@ -148,6 +148,7 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
                         object_name=object_name,
                         subject_id=subject_entity.id,
                         object_id=object_entity.id,
+                        relation_type=result.get("relation_type", "UNKNOWN"),
                         description=result.get("description", ""),
                         relation_strength=result.get("relation_strength", 1.0),
                         source_chunk_id=[chunk.id],

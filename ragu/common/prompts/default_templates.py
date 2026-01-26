@@ -20,6 +20,10 @@ It is necessary to identify all entities of the specified types in the text, as 
     For each such pair, extract the following information:  
     - **source_entity**: The name of the source entity (as defined in step 1).  
     - **target_entity**: The name of the target entity (as defined in step 1).  
+    - **relation_type**: The type of the relation.  
+    {% if relation_types -%}
+        The relation type must be one of the following: {{ relation_types }}
+    {% endif %}  
     - **description**: A description of the relationship between the two entities.  
     - **relationship_strength**: A numeric value representing the strength of the relationship between the entities, ranging from 0 to 5, 
     where 0 = weak connection and 5 = strong connection.  
