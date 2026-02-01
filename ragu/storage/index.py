@@ -9,13 +9,13 @@ from typing import (
     Iterable,
     List,
     Optional,
-    Tuple,
     Type
 )
 
 from ragu.chunker.types import Chunk
 from ragu.common.global_parameters import DEFAULT_FILENAMES
 from ragu.common.global_parameters import Settings
+from ragu.common.logger import logger
 from ragu.embedder.base_embedder import BaseEmbedder
 from ragu.graph.graph_builder_pipeline import KnowledgeGraphBuilderSettings
 from ragu.graph.types import (
@@ -24,7 +24,6 @@ from ragu.graph.types import (
     Community,
     CommunitySummary
 )
-from ragu.storage.transaction import DeleteTransaction
 from ragu.storage.base_storage import (
     BaseKVStorage,
     BaseVectorStorage,
@@ -33,7 +32,6 @@ from ragu.storage.base_storage import (
 from ragu.storage.graph_storage_adapters.networkx_adapter import NetworkXStorage
 from ragu.storage.kv_storage_adapters.json_storage import JsonKVStorage
 from ragu.storage.vdb_storage_adapters.nano_vdb import NanoVectorDBStorage
-from ragu.common.logger import logger
 
 
 class Index:
