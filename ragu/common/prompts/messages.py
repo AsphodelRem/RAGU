@@ -43,21 +43,18 @@ class BaseMessage:
             return ChatCompletionSystemMessageParam(
                 role="system",
                 content=self.content,
-                name=self.name,
             )
 
         if self.role == "user":
             return ChatCompletionUserMessageParam(
                 role="user",
                 content=self.content,
-                name=self.name,
             )
 
         if self.role == "assistant":
             return ChatCompletionAssistantMessageParam(
                 role="assistant",
                 content=self.content,
-                name=self.name,
             )
 
         raise ValueError(f"Unsupported role: {self.role}")
@@ -198,7 +195,7 @@ def render(template_conversation: Union[BaseMessage, ChatMessages], **params: An
 
             msg_type = type(m)
             rendered_msgs.append(
-                msg_type(role=m.role, content=new_content, name=m.name)
+                msg_type(role=m.role, content=new_content)
             )
 
         out.append(ChatMessages.from_messages(rendered_msgs))
